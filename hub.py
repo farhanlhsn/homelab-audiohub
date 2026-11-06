@@ -13,11 +13,15 @@ import time
 import wave
 from pathlib import Path
 
-from aiohttp import web, ClientSession, ClientTimeout
+from aiohttp import web, ClientError, ClientSession, ClientTimeout
 from core import (ActivityTracker, ConfigStore, SONY, agent_reply, bluetooth_streams_to_move, clean_ip, clean_mac,
-                  loopback_ids, next_retry_delay, pick_source, should_reconnect, sink_indexes, sink_states)
+                  loopback_ids, next_retry_delay, pick_source, should_reconnect, sink_indexes, sink_states,
+                  sources_playing, transport_state)
 
-SOURCE_NAMES = dict(network='audio perangkat', spotify='Spotify', airplay='AirPlay', bluetooth='Bluetooth')
+SOURCE_NAMES = dict(network='audio perangkat', spotify='Spotify', airplay='AirPlay', bluetooth='Bluetooth', dlna='DLNA')
+# Sinks created on demand (no engine restart); the DLNA unit also creates its own before it starts.
+EXTRA_SINKS = dict(audiohub_bluetooth='AudioHub-Bluetooth', audiohub_dlna='AudioHub-DLNA')
+DLNA_CONTROL = 'http://192.168.8.240:49494/upnp/control/rendertransport1'
 A2DP_SOURCE_UUID = '0000110a-0000-1000-8000-00805f9b34fb'
 ADAPTER_ALIAS = 'Homelab Audio'
 PAIRING_SECONDS = 120
@@ -185,6 +189,7 @@ class Controller:
         self.reconnect_failures = 0
         self.next_reconnect = 0
         self.bt_streaming = False
+        self.previous_states = None
         self.bt_devices = []
         self.pair_task = None
         self.pair_until = 0
@@ -218,25 +223,45 @@ class Controller:
             audio_ready=sink is not None, sink_state=sink.get('state') if sink else None)
         return self.cached
 
+    async def dlna_transport_state(self):
+        """PLAYING/STOPPED/PAUSED_PLAYBACK from the renderer; its audio stream stays open after Stop."""
+        envelope = ('<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
+                    's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body>'
+                    '<u:GetTransportInfo xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><InstanceID>0</InstanceID>'
+                    '</u:GetTransportInfo></s:Body></s:Envelope>')
+        headers = {'Content-Type': 'text/xml; charset="utf-8"',
+                   'SOAPACTION': '"urn:schemas-upnp-org:service:AVTransport:1#GetTransportInfo"'}
+        try:
+            async with ClientSession(timeout=ClientTimeout(total=1.5)) as session:
+                async with session.post(DLNA_CONTROL, data=envelope, headers=headers) as response:
+                    return transport_state(await response.text())
+        except (ClientError, asyncio.TimeoutError, OSError):
+            return None
+
     async def refresh_activity(self):
         """Note which source is playing and follow a new one when the selected source is silent."""
         sinks = await command('pactl', 'list', 'short', 'sinks')
-        if 'audiohub_bluetooth' not in sink_states(sinks):
-            # Loaded here rather than in the PipeWire config so it needs no engine restart.
-            await command('pactl', 'load-module', 'module-null-sink', 'sink_name=audiohub_bluetooth', 'rate=48000',
-                          'channels=2', 'sink_properties=device.description=AudioHub-Bluetooth')
+        missing = [name for name in EXTRA_SINKS if name not in sink_states(sinks)]
+        for name in missing:
+            await command('pactl', 'load-module', 'module-null-sink', 'sink_name=' + name, 'rate=48000',
+                          'channels=2', 'sink_properties=device.description=' + EXTRA_SINKS[name])
+        if missing:
             sinks = await command('pactl', 'list', 'short', 'sinks')
-        target = sink_indexes(sinks).get('audiohub_bluetooth')
+        indexes = sink_indexes(sinks)
+        inputs = json.loads(await command('pactl', '-f', 'json', 'list', 'sink-inputs'))
+        target = indexes.get('audiohub_bluetooth')
         if target is not None:
-            moves = bluetooth_streams_to_move(json.loads(await command('pactl', '-f', 'json', 'list', 'sink-inputs')), target)
+            moves = bluetooth_streams_to_move(inputs, target)
             for index in moves:
                 await command('pactl', 'move-sink-input', str(index), 'audiohub_bluetooth', check=False)
             if moves:
-                sinks = await command('pactl', 'list', 'short', 'sinks')
-        states = sink_states(sinks)
-        self.bt_streaming = states.get('audiohub_bluetooth') == 'RUNNING'
+                inputs = json.loads(await command('pactl', '-f', 'json', 'list', 'sink-inputs'))
+        dlna_open = any(item.get('sink') == indexes.get('audiohub_dlna') and not item.get('corked') for item in inputs)
+        states = sources_playing(inputs, indexes, await self.dlna_transport_state() if dlna_open else None)
+        self.bt_streaming = states['audiohub_bluetooth'] == 'RUNNING'
         old = dict(self.store.data)
-        source = pick_source(old['source'], states)
+        source = pick_source(old['source'], states, self.previous_states)
+        self.previous_states = states
         if states.get('audiohub_' + source) == 'RUNNING':
             self.activity.touch(time.monotonic())
         if source != old['source']:

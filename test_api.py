@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 from aiohttp.test_utils import TestClient, TestServer
 import asyncio
+from core import sink_indexes
 from hub import Controller, make_app, sender_available
 
 SPEAKER = dict(connected=True, paired=True, bonded=True, trusted=True, name='ULT FIELD 1')
@@ -35,6 +36,12 @@ class FakePactl:
             self.loaded_args = args
             self.loaded = True
             return '536870919'
+        if args[:2] == ('pactl', 'move-sink-input'):
+            items = json.loads(self.sink_inputs)
+            for item in items:
+                if str(item['index']) == args[2]:
+                    item['sink'] = sink_indexes(self.sinks)[args[3]]
+            self.sink_inputs = json.dumps(items)
         if args[:2] == ('pactl', 'unload-module'):
             self.loaded = False
         if args[:4] == ('pactl', '-f', 'json', 'list'):
@@ -174,8 +181,89 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         missing = FakePactl(sinks='')
         with mock.patch('hub.command', missing):
             await self.controller.refresh_activity()
-        self.assertTrue(any(call[:3] == ('pactl', 'load-module', 'module-null-sink') and 'sink_name=audiohub_bluetooth' in call
-                            for call in missing.calls))
+        for name in ('audiohub_bluetooth', 'audiohub_dlna'):
+            self.assertTrue(any(call[:3] == ('pactl', 'load-module', 'module-null-sink') and 'sink_name=' + name in call
+                                for call in missing.calls), name)
+
+    async def test_dlna_playback_is_routed_to_the_sony_and_followed_automatically(self):
+        renderer = json.dumps([{'index': 13010, 'sink': 46, 'corked': False, 'properties': {'node.name': 'gmediarender'}}])
+        pactl = FakePactl(sinks='45\taudiohub_bluetooth\tPipeWire\tfloat32le 2ch 48000Hz\tIDLE\n'
+                                '46\taudiohub_dlna\tPipeWire\tfloat32le 2ch 48000Hz\tRUNNING\n', sink_inputs=renderer)
+        self.controller.cached = dict(speaker=SPEAKER, sink='bluez_output.sony', sink_index=10)
+
+        async def playing():
+            return 'PLAYING'
+        with mock.patch('hub.command', pactl), mock.patch.object(self.controller, 'dlna_transport_state', playing):
+            await self.controller.refresh_activity()
+            await self.controller.route_audio()
+        self.assertEqual(self.controller.store.data['source'], 'dlna')
+        self.assertIn('source=audiohub_dlna.monitor', pactl.loaded_args)
+        self.assertIn('DLNA', self.controller.last_action)
+
+    async def test_dlna_takes_over_from_an_airplay_session_that_stays_open(self):
+        airplay = {'index': 11172, 'sink': 41, 'corked': False, 'properties': {'node.name': 'AudioHub AirPlay'}}
+        renderer = {'index': 13010, 'sink': 46, 'corked': False, 'properties': {'node.name': 'gmediarender'}}
+        sinks = ('41\taudiohub_airplay\tPipeWire\tfloat32le 2ch 44100Hz\tRUNNING\n'
+                 '45\taudiohub_bluetooth\tPipeWire\tfloat32le 2ch 48000Hz\tIDLE\n'
+                 '46\taudiohub_dlna\tPipeWire\tfloat32le 2ch 48000Hz\tRUNNING\n')
+        pactl = FakePactl(sinks=sinks, sink_inputs=json.dumps([airplay, renderer]))
+        state = {'value': 'STOPPED'}
+
+        async def transport():
+            return state['value']
+        self.controller.store.update({'source': 'airplay'})
+        self.controller.cached = dict(speaker=SPEAKER, sink='bluez_output.sony', sink_index=10)
+        with mock.patch('hub.command', pactl), mock.patch.object(self.controller, 'dlna_transport_state', transport):
+            await self.controller.refresh_activity()
+            self.assertEqual(self.controller.store.data['source'], 'airplay')
+            state['value'] = 'PLAYING'
+            await self.controller.refresh_activity()
+            await self.controller.route_audio()
+            self.assertEqual(self.controller.store.data['source'], 'dlna')
+            self.assertIn('source=audiohub_dlna.monitor', pactl.loaded_args)
+            state['value'] = 'STOPPED'
+            await self.controller.refresh_activity()
+        self.assertEqual(self.controller.store.data['source'], 'airplay')
+
+    async def test_stopped_renderer_with_an_open_stream_does_not_hold_the_speaker_or_take_over(self):
+        # gmediarender keeps its pulse stream (uncorked) after Stop; only the UPnP state says it is idle.
+        renderer = json.dumps([{'index': 13010, 'sink': 46, 'corked': False, 'properties': {'node.name': 'gmediarender'}}])
+        pactl = FakePactl(sinks='46\taudiohub_dlna\tPipeWire\tfloat32le 2ch 48000Hz\tRUNNING\n', sink_inputs=renderer)
+        self.controller.cached = dict(speaker=SPEAKER, sink='bluez_output.sony', sink_index=10)
+
+        async def stopped():
+            return 'STOPPED'
+        with mock.patch('hub.command', pactl), mock.patch.object(self.controller, 'dlna_transport_state', stopped):
+            await self.controller.refresh_activity()
+            await self.controller.route_audio()
+        self.assertEqual(self.controller.store.data['source'], 'network')
+        self.assertFalse(pactl.loaded)
+
+    async def test_idle_airplay_session_with_a_corked_stream_does_not_block_another_source(self):
+        # Seen live: the sink stayed RUNNING (its monitor was being read) although shairport's stream was corked.
+        inputs = json.dumps([{'index': 11172, 'sink': 41, 'corked': True, 'properties': {'node.name': 'AudioHub AirPlay'}},
+                             {'index': 8168, 'sink': 37, 'corked': False, 'properties': {'node.name': PHONE, 'api.bluez5.profile': 'a2dp-source'}}])
+        pactl = FakePactl(sinks='37\taudiohub_network\tPipeWire\tfloat32le 2ch 48000Hz\tIDLE\n'
+                                '41\taudiohub_airplay\tPipeWire\tfloat32le 2ch 44100Hz\tRUNNING\n'
+                                '45\taudiohub_bluetooth\tPipeWire\tfloat32le 2ch 48000Hz\tIDLE\n', sink_inputs=inputs)
+        self.controller.store.update({'source': 'airplay'})
+        self.controller.cached = dict(speaker=SPEAKER, sink='bluez_output.sony', sink_index=10)
+        with mock.patch('hub.command', pactl):
+            await self.controller.refresh_activity()
+            await self.controller.route_audio()
+        self.assertEqual(self.controller.store.data['source'], 'bluetooth')
+        self.assertIn('source=audiohub_bluetooth.monitor', pactl.loaded_args)
+
+    async def test_speaker_is_released_once_only_a_corked_stream_remains(self):
+        corked = json.dumps([{'index': 11172, 'sink': 41, 'corked': True, 'properties': {'node.name': 'AudioHub AirPlay'}}])
+        pactl = FakePactl(sinks='41\taudiohub_airplay\tPipeWire\tfloat32le 2ch 44100Hz\tRUNNING\n', loaded=True, sink_inputs=corked)
+        self.controller.store.update({'source': 'airplay'})
+        self.controller.cached = dict(speaker=SPEAKER, sink='bluez_output.sony', sink_index=10)
+        with mock.patch('hub.command', pactl):
+            await self.controller.refresh_activity()
+            self.assertFalse(self.controller.activity.active(time.monotonic()))
+            await self.controller.route_audio()
+        self.assertFalse(pactl.loaded)
 
     async def test_unknown_operation_is_rejected(self):
         response = await self.client.post('/api/speaker/reboot', json={}, headers=self.headers())
@@ -239,8 +327,9 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(pactl.loaded)
 
     async def test_source_follows_whatever_starts_playing_when_selected_one_is_silent(self):
+        airplay = json.dumps([{'index': 11172, 'sink': 41, 'corked': False, 'properties': {'node.name': 'AudioHub AirPlay'}}])
         pactl = FakePactl(sinks='37\taudiohub_network\tPipeWire\tfloat32le 2ch 48000Hz\tIDLE\n'
-                                '41\taudiohub_airplay\tPipeWire\tfloat32le 2ch 44100Hz\tRUNNING\n')
+                                '41\taudiohub_airplay\tPipeWire\tfloat32le 2ch 44100Hz\tRUNNING\n', sink_inputs=airplay)
         self.controller.cached = dict(speaker=SPEAKER, sink='bluez_output.sony', sink_index=10)
         with mock.patch('hub.command', pactl):
             await self.controller.refresh_activity()

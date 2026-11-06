@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 SONY = '74:68:59:68:28:17'
-SOURCES = ('bluetooth', 'airplay', 'spotify', 'network')
+SOURCES = ('bluetooth', 'airplay', 'dlna', 'spotify', 'network')
 DEFAULTS = dict(source='network', sender_ip='', buffer_ms=80, quantum=1024,
                 volume=30, auto_reconnect=True, speaker_enabled=True,
                 network_enabled=False)
@@ -61,6 +61,28 @@ def sink_indexes(text):
     return indexes
 
 
+def sources_playing(sink_inputs, indexes, dlna_state):
+    """RUNNING/IDLE per source, from the streams rather than the sink state: reading a sink's monitor
+    keeps it RUNNING even when its only stream is corked (shairport) or the renderer sits idle with
+    its stream open (gmediarender), which would pin the speaker awake and block every other source.
+    DLNA additionally needs the renderer's own transport state to be PLAYING."""
+    states = {}
+    for source in SOURCES:
+        name = 'audiohub_' + source
+        index = indexes.get(name)
+        playing = index is not None and any(item.get('sink') == index and not item.get('corked') for item in sink_inputs)
+        if source == 'dlna':
+            playing = playing and dlna_state == 'PLAYING'
+        states[name] = 'RUNNING' if playing else 'IDLE'
+    return states
+
+
+def transport_state(xml):
+    """CurrentTransportState from a UPnP GetTransportInfo reply (PLAYING, STOPPED, ...)."""
+    found = re.search(r'<CurrentTransportState>([A-Z_]+)</CurrentTransportState>', xml)
+    return found.group(1) if found else None
+
+
 def bluetooth_streams_to_move(sink_inputs, target):
     """A phone's A2DP stream arrives as a playback stream that WirePlumber autoconnects to the
     default sink; these are the ones not yet on our dedicated Bluetooth sink."""
@@ -83,8 +105,14 @@ def agent_reply(line):
     return None
 
 
-def pick_source(current, states):
-    """Follow whichever source starts playing when the selected one is silent."""
+def pick_source(current, states, previous=None):
+    """The source that just started playing wins; otherwise keep the selected one while it plays,
+    else follow whichever one is playing. `previous` is the last reading (None on the first)."""
+    if previous is not None:
+        started = [source for source in SOURCES
+                   if states.get('audiohub_' + source) == 'RUNNING' and previous.get('audiohub_' + source) != 'RUNNING']
+        if started and current not in started:
+            return started[0]
     if states.get('audiohub_' + current) == 'RUNNING':
         return current
     for source in SOURCES:

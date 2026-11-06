@@ -4,7 +4,10 @@ import unittest
 from pathlib import Path
 
 from core import (ActivityTracker, ConfigStore, agent_reply, bluetooth_streams_to_move, clean_ip, clean_mac,
-                  loopback_ids, next_retry_delay, pick_source, should_reconnect, sink_indexes, sink_states)
+                  loopback_ids, next_retry_delay, pick_source, should_reconnect, sink_indexes, sink_states,
+                  sources_playing, transport_state)
+
+INDEXES = {'audiohub_network': 37, 'audiohub_spotify': 39, 'audiohub_airplay': 41, 'audiohub_bluetooth': 45, 'audiohub_dlna': 46}
 
 
 class CoreTests(unittest.TestCase):
@@ -38,6 +41,39 @@ class CoreTests(unittest.TestCase):
             store = ConfigStore(Path(d) / 'settings.json')
             self.assertEqual(store.update({'source': 'bluetooth'})['source'], 'bluetooth')
         self.assertEqual(pick_source('network', {'audiohub_bluetooth': 'RUNNING'}), 'bluetooth')
+
+    def test_activity_comes_from_streams_not_from_the_sink_state(self):
+        # A corked shairport stream stays open and an idle renderer keeps its stream; a sink
+        # whose monitor is being read reports RUNNING for both, so only the streams tell the truth.
+        inputs = [{'index': 1, 'sink': 41, 'corked': True}, {'index': 2, 'sink': 46, 'corked': False},
+                  {'index': 3, 'sink': 45, 'corked': False}, {'index': 4, 'sink': 2806, 'corked': False}]
+        states = sources_playing(inputs, INDEXES, 'STOPPED')
+        self.assertEqual(states['audiohub_airplay'], 'IDLE')
+        self.assertEqual(states['audiohub_dlna'], 'IDLE')
+        self.assertEqual(states['audiohub_bluetooth'], 'RUNNING')
+        self.assertEqual(states['audiohub_network'], 'IDLE')
+        self.assertEqual(sources_playing(inputs, INDEXES, 'PLAYING')['audiohub_dlna'], 'RUNNING')
+        self.assertEqual(sources_playing(inputs, INDEXES, 'PAUSED_PLAYBACK')['audiohub_dlna'], 'IDLE')
+        self.assertEqual(sources_playing(inputs, INDEXES, None)['audiohub_dlna'], 'IDLE')
+
+    def test_transport_state_is_read_from_the_renderer_reply(self):
+        reply = ('<s:Envelope><s:Body><u:GetTransportInfoResponse><CurrentTransportState>PLAYING</CurrentTransportState>'
+                 '<CurrentTransportStatus>OK</CurrentTransportStatus></u:GetTransportInfoResponse></s:Body></s:Envelope>')
+        self.assertEqual(transport_state(reply), 'PLAYING')
+        self.assertIsNone(transport_state('<html>not upnp</html>'))
+        self.assertIsNone(transport_state(''))
+
+    def test_a_sink_that_does_not_exist_yet_is_idle(self):
+        states = sources_playing([{'index': 1, 'sink': 41, 'corked': False}], {'audiohub_airplay': 41}, None)
+        self.assertEqual(states['audiohub_airplay'], 'RUNNING')
+        self.assertEqual(states['audiohub_dlna'], 'IDLE')
+
+    def test_dlna_is_a_valid_source_and_followed_when_it_plays(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = ConfigStore(Path(d) / 'settings.json')
+            self.assertEqual(store.update({'source': 'dlna'})['source'], 'dlna')
+        self.assertEqual(pick_source('network', {'audiohub_dlna': 'RUNNING'}), 'dlna')
+        self.assertEqual(pick_source('dlna', {'audiohub_dlna': 'RUNNING', 'audiohub_airplay': 'RUNNING'}), 'dlna')
 
     def test_loopback_ids_use_real_pactl_short_output(self):
         output = '536870912\tmodule-null-sink\tsink_name=audiohub_network\t\n536870925\tmodule-loopback\tsource=audiohub_network.monitor sink=bluez_output.SONY\t\n536870926\tmodule-loopback\tsource=other.monitor sink=other\t\n'
@@ -117,6 +153,24 @@ class CoreTests(unittest.TestCase):
     def test_playing_source_is_followed_when_selected_one_is_silent(self):
         states = {'audiohub_network': 'IDLE', 'audiohub_airplay': 'RUNNING', 'audiohub_spotify': 'SUSPENDED'}
         self.assertEqual(pick_source('network', states), 'airplay')
+
+    def test_a_source_that_starts_playing_takes_over_from_one_that_was_already_running(self):
+        # An AirPlay session can stay open and silent for hours; the newcomer must still be heard.
+        before = {'audiohub_airplay': 'RUNNING', 'audiohub_dlna': 'IDLE'}
+        after = {'audiohub_airplay': 'RUNNING', 'audiohub_dlna': 'RUNNING'}
+        self.assertEqual(pick_source('airplay', after, before), 'dlna')
+        self.assertEqual(pick_source('dlna', after, after), 'dlna')
+        self.assertEqual(pick_source('airplay', after, after), 'airplay')
+
+    def test_nothing_is_taken_over_without_a_previous_reading(self):
+        after = {'audiohub_airplay': 'RUNNING', 'audiohub_dlna': 'RUNNING'}
+        self.assertEqual(pick_source('airplay', after, None), 'airplay')
+
+    def test_the_selected_source_is_kept_when_it_is_among_those_that_just_started(self):
+        before = {'audiohub_airplay': 'IDLE', 'audiohub_dlna': 'IDLE'}
+        after = {'audiohub_airplay': 'RUNNING', 'audiohub_dlna': 'RUNNING'}
+        self.assertEqual(pick_source('dlna', after, before), 'dlna')
+        self.assertEqual(pick_source('network', after, before), 'airplay')  # first in SOURCES order
 
     def test_selection_is_kept_when_nothing_is_playing(self):
         self.assertEqual(pick_source('spotify', {'audiohub_airplay': 'IDLE'}), 'spotify')
