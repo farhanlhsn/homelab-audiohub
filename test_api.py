@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import threading
 import time
@@ -9,6 +10,7 @@ from aiohttp.test_utils import TestClient, TestServer
 import asyncio
 from core import sink_indexes
 from hub import Controller, make_app, sender_available
+from test_core import item
 
 SPEAKER = dict(connected=True, paired=True, bonded=True, trusted=True, name='ULT FIELD 1')
 LOOPBACK = '536870919\tmodule-loopback\tsource=audiohub_network.monitor sink=bluez_output.sony latency_msec=20\t\n'
@@ -184,6 +186,61 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         for name in ('audiohub_bluetooth', 'audiohub_dlna'):
             self.assertTrue(any(call[:3] == ('pactl', 'load-module', 'module-null-sink') and 'sink_name=' + name in call
                                 for call in missing.calls), name)
+
+    async def test_airplay_pipe_data_becomes_the_now_playing_title_only_while_airplay_plays(self):
+        reader, writer = os.pipe()
+        self.addCleanup(os.close, reader)
+        self.addCleanup(os.close, writer)
+        self.controller.store.update({'source': 'airplay'})
+        os.write(writer, item('ssnc', 'mdst') + item('core', 'minm', 'Lagu') + item('core', 'asar', 'Artis') + item('ssnc', 'mden'))
+        self.controller.read_pipe(reader)
+        self.assertIsNone(self.controller.status()['now_playing'])
+        self.controller.previous_states = {'audiohub_airplay': 'RUNNING'}
+        self.assertEqual(self.controller.status()['now_playing'], {'title': 'Lagu', 'artist': 'Artis', 'source': 'airplay'})
+        os.write(writer, item('ssnc', 'pend'))
+        self.controller.read_pipe(reader)
+        self.assertIsNone(self.controller.status()['now_playing'])
+
+    async def test_reading_an_empty_pipe_does_nothing(self):
+        reader, writer = os.pipe()
+        os.set_blocking(reader, False)
+        self.addCleanup(os.close, reader)
+        self.addCleanup(os.close, writer)
+        self.controller.read_pipe(reader)
+        self.assertEqual(self.controller.airplay_track, {})
+
+    async def test_dlna_title_is_shown_only_while_the_renderer_plays(self):
+        renderer = json.dumps([{'index': 13010, 'sink': 46, 'corked': False, 'properties': {'node.name': 'gmediarender'}}])
+        pactl = FakePactl(sinks='45\taudiohub_bluetooth\tPipeWire\tfloat32le 2ch 48000Hz\tIDLE\n'
+                                '46\taudiohub_dlna\tPipeWire\tfloat32le 2ch 48000Hz\tRUNNING\n', sink_inputs=renderer)
+        state = {'value': 'PLAYING'}
+
+        async def transport():
+            return state['value']
+
+        async def position():
+            return {'title': 'Lagu DLNA', 'artist': 'Artis'}
+        with mock.patch('hub.command', pactl), mock.patch.object(self.controller, 'dlna_transport_state', transport), \
+                mock.patch.object(self.controller, 'dlna_position', position):
+            await self.controller.refresh_activity()
+            self.assertEqual(self.controller.status()['now_playing'], {'title': 'Lagu DLNA', 'artist': 'Artis', 'source': 'dlna'})
+            state['value'] = 'STOPPED'
+            await self.controller.refresh_activity()
+        self.assertIsNone(self.controller.status()['now_playing'])
+
+    async def test_bluetooth_title_comes_from_avrcp_and_a_failure_never_breaks_the_tick(self):
+        phone = json.dumps([{'index': 8168, 'sink': 45, 'corked': False, 'properties': {'node.name': PHONE, 'api.bluez5.profile': 'a2dp-source'}}])
+        pactl = FakePactl(sinks='45\taudiohub_bluetooth\tPipeWire\tfloat32le 2ch 48000Hz\tRUNNING\n', sink_inputs=phone)
+        with mock.patch('hub.command', pactl), mock.patch('hub.bluetooth_track', lambda: {'title': 'Lagu BT', 'album': 'Album'}):
+            await self.controller.refresh_activity()
+            self.assertEqual(self.controller.status()['now_playing'], {'title': 'Lagu BT', 'album': 'Album', 'source': 'bluetooth'})
+
+        def broken():
+            raise RuntimeError('org.bluez.Error.Failed')
+        with mock.patch('hub.command', pactl), mock.patch('hub.bluetooth_track', broken):
+            await self.controller.refresh_activity()
+        self.assertIsNone(self.controller.status()['now_playing'])
+        self.assertEqual(self.controller.store.data['source'], 'bluetooth')
 
     async def test_dlna_playback_is_routed_to_the_sony_and_followed_automatically(self):
         renderer = json.dumps([{'index': 13010, 'sink': 46, 'corked': False, 'properties': {'node.name': 'gmediarender'}}])

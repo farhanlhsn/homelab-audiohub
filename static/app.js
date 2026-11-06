@@ -30,6 +30,12 @@ function render(next) {
   $('pair').hidden = next.speaker.paired;
   $('auto').checked = next.settings.auto_reconnect;
   $('route-status').textContent = next.route_active ? 'Diteruskan ke Sony' : next.route_ready ? 'Siaga · menunggu audio' : 'Menunggu speaker';
+  const track = next.now_playing;
+  $('now').hidden = !track;
+  if (track) {
+    $('now-title').textContent = track.title || track.artist || '';
+    $('now-detail').textContent = [track.title ? track.artist : '', track.album].filter(Boolean).join(' · ');
+  }
   for (const el of document.querySelectorAll('[data-source]')) {
     const selected = el.dataset.source === next.settings.source;
     el.setAttribute('aria-selected', String(selected));

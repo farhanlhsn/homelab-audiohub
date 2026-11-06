@@ -1,4 +1,7 @@
 """Validated, persistent operator settings for one homelab audio bridge."""
+import base64
+import binascii
+import html
 import ipaddress
 import json
 import os
@@ -75,6 +78,65 @@ def sources_playing(sink_inputs, indexes, dlna_state):
             playing = playing and dlna_state == 'PLAYING'
         states[name] = 'RUNNING' if playing else 'IDLE'
     return states
+
+
+MAX_TEXT = 120
+MAX_PIPE_BUFFER = 65536
+PIPE_ITEM = re.compile(r'<item><type>([0-9a-f]+)</type><code>([0-9a-f]+)</code><length>(\d+)</length>\s*'
+                       r'(?:<data encoding="base64">\s*([^<]*)</data>)?\s*</item>')
+
+
+def clean_text(value):
+    """Track text comes from other devices: single line, bounded."""
+    return ' '.join(str(value).split())[:MAX_TEXT]
+
+
+def parse_shairport_metadata(buffer):
+    """Complete items from shairport-sync's metadata pipe plus the unparsed rest (kept bounded)."""
+    text = buffer.decode('latin1')
+    items, end = [], 0
+    for found in PIPE_ITEM.finditer(text):
+        end = found.end()
+        try:
+            items.append((bytes.fromhex(found.group(1)).decode('latin1'), bytes.fromhex(found.group(2)).decode('latin1'),
+                          base64.b64decode(found.group(4) or '')))
+        except (ValueError, binascii.Error):
+            continue
+    return items, text[end:][-MAX_PIPE_BUFFER:].encode('latin1')
+
+
+def apply_airplay_item(now, kind, code, data):
+    """Fold one metadata item into the current track (title/artist/album)."""
+    if kind == 'ssnc' and code in ('mdst', 'pend'):
+        return {}
+    field = {'minm': 'title', 'asar': 'artist', 'asal': 'album'}.get(code) if kind == 'core' else None
+    text = clean_text(data.decode('utf-8', 'replace')) if field else ''
+    return {**now, field: text} if text else now
+
+
+def didl_track(xml):
+    """Title/artist/album from the DIDL-Lite inside a UPnP GetPositionInfo reply, or None."""
+    found = re.search(r'<TrackMetaData>([^<]*)</TrackMetaData>', xml)
+    if not found:
+        return None
+    didl = html.unescape(found.group(1))
+
+    def pick(tag):
+        match = re.search(r'<%s(?:\s[^>]*)?>([^<]*)</%s>' % (tag, tag), didl)
+        return clean_text(html.unescape(match.group(1))) if match else ''
+    track = {key: value for key, value in (('title', pick('dc:title')), ('artist', pick('upnp:artist')),
+                                           ('album', pick('upnp:album'))) if value}
+    return track or None
+
+
+def bluez_track(player):
+    """Track from a BlueZ AVRCP MediaPlayer1 (Status + Track dict), or None when stopped/unknown."""
+    if str(player.get('Status', '')).lower() == 'stopped':
+        return None
+    track = player.get('Track') or {}
+    result = {key: clean_text(track.get(name, '')) for key, name in (('title', 'Title'), ('artist', 'Artist'), ('album', 'Album'))}
+    result = {key: value for key, value in result.items() if value}
+    return result or None
 
 
 def transport_state(xml):

@@ -1,13 +1,80 @@
+import base64
+import html
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from core import (ActivityTracker, ConfigStore, agent_reply, bluetooth_streams_to_move, clean_ip, clean_mac,
-                  loopback_ids, next_retry_delay, pick_source, should_reconnect, sink_indexes, sink_states,
+from core import (ActivityTracker, ConfigStore, agent_reply, apply_airplay_item, bluetooth_streams_to_move,
+                  bluez_track, clean_ip, clean_mac, didl_track, loopback_ids, next_retry_delay,
+                  parse_shairport_metadata, pick_source, should_reconnect, sink_indexes, sink_states,
                   sources_playing, transport_state)
 
+
+def item(kind, code, text=None):
+    """One item as shairport-sync writes it to its metadata pipe."""
+    data = b'' if text is None else text.encode()
+    body = '<item><type>%s</type><code>%s</code><length>%d</length>\n' % (kind.encode().hex(), code.encode().hex(), len(data))
+    if text is not None:
+        body += '<data encoding="base64">\n%s</data>' % base64.b64encode(data).decode()
+    return (body + '</item>\n').encode()
+
 INDEXES = {'audiohub_network': 37, 'audiohub_spotify': 39, 'audiohub_airplay': 41, 'audiohub_bluetooth': 45, 'audiohub_dlna': 46}
+
+
+class NowPlayingTests(unittest.TestCase):
+    def test_metadata_pipe_items_are_parsed_even_when_a_read_ends_mid_item(self):
+        stream = item('core', 'minm', 'Lagu') + item('core', 'asar', 'Artis') + item('ssnc', 'pend')
+        items, rest = parse_shairport_metadata(stream[:50])
+        self.assertEqual(items, [])
+        items, rest = parse_shairport_metadata(rest + stream[50:])
+        self.assertEqual(items, [('core', 'minm', b'Lagu'), ('core', 'asar', b'Artis'), ('ssnc', 'pend', b'')])
+        self.assertEqual(rest.strip(), b'')
+
+    def test_metadata_pipe_garbage_is_survived_and_the_buffer_stays_bounded(self):
+        items, rest = parse_shairport_metadata(b'noise <item>not closed ' + b'x' * 300000)
+        self.assertEqual(items, [])
+        self.assertLessEqual(len(rest), 65536)
+        items, _ = parse_shairport_metadata(b'<item><type>zz</type><code>1</code><length>1</length></item>' + item('core', 'minm', 'Ok'))
+        self.assertEqual(items, [('core', 'minm', b'Ok')])
+
+    def test_airplay_title_artist_album_follow_the_track_and_clear_when_playback_ends(self):
+        now = {}
+        for kind, code, data in [('ssnc', 'mdst', b''), ('core', 'minm', 'Lagu — Baru'.encode()),
+                                 ('core', 'asar', b'Artis'), ('core', 'asal', b'Album')]:
+            now = apply_airplay_item(now, kind, code, data)
+        self.assertEqual(now, {'title': 'Lagu — Baru', 'artist': 'Artis', 'album': 'Album'})
+        now = apply_airplay_item(now, 'ssnc', 'mdst', b'')
+        now = apply_airplay_item(now, 'core', 'minm', b'Lagu Lain')
+        self.assertEqual(now, {'title': 'Lagu Lain'})
+        self.assertEqual(apply_airplay_item(now, 'ssnc', 'pend', b''), {})
+        self.assertEqual(apply_airplay_item(now, 'core', 'asgn', b'Genre'), now)
+
+    def test_metadata_text_is_trimmed_and_survives_invalid_bytes(self):
+        now = apply_airplay_item({}, 'core', 'minm', b'a' * 500)
+        self.assertEqual(len(now['title']), 120)
+        self.assertEqual(apply_airplay_item({}, 'core', 'asar', b'\xff\xfeX')['artist'].endswith('X'), True)
+
+    def test_dlna_track_is_read_from_the_didl_inside_the_soap_reply(self):
+        didl = ('<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" '
+                'xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"><item id="1"><dc:title>Lagu &amp; Co</dc:title>'
+                '<upnp:artist role="AlbumArtist">Artis</upnp:artist><upnp:album>Album</upnp:album></item></DIDL-Lite>')
+        reply = '<s:Envelope><s:Body><u:GetPositionInfoResponse><TrackMetaData>%s</TrackMetaData></u:GetPositionInfoResponse></s:Body></s:Envelope>' % html.escape(didl)
+        self.assertEqual(didl_track(reply), {'title': 'Lagu & Co', 'artist': 'Artis', 'album': 'Album'})
+
+    def test_dlna_track_is_none_without_usable_metadata(self):
+        for reply in ['', '<TrackMetaData>NOT_IMPLEMENTED</TrackMetaData>', '<TrackMetaData></TrackMetaData>',
+                      '<TrackMetaData>&lt;DIDL-Lite&gt;&lt;item&gt;&lt;/item&gt;&lt;/DIDL-Lite&gt;</TrackMetaData>', 'garbage']:
+            with self.subTest(reply=reply):
+                self.assertIsNone(didl_track(reply))
+
+    def test_bluetooth_track_comes_from_the_avrcp_player_only_while_it_is_not_stopped(self):
+        track = {'Title': 'Lagu', 'Artist': 'Artis', 'Album': 'Album', 'Duration': '1000'}
+        self.assertEqual(bluez_track({'Status': 'playing', 'Track': track}), {'title': 'Lagu', 'artist': 'Artis', 'album': 'Album'})
+        self.assertEqual(bluez_track({'Status': 'paused', 'Track': {'Title': 'Lagu'}}), {'title': 'Lagu'})
+        self.assertIsNone(bluez_track({'Status': 'stopped', 'Track': track}))
+        self.assertIsNone(bluez_track({'Status': 'playing', 'Track': {}}))
+        self.assertIsNone(bluez_track({}))
 
 
 class CoreTests(unittest.TestCase):

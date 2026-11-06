@@ -8,20 +8,23 @@ import math
 import os
 import secrets
 import socket
+import stat
 import struct
 import time
 import wave
 from pathlib import Path
 
 from aiohttp import web, ClientError, ClientSession, ClientTimeout
-from core import (ActivityTracker, ConfigStore, SONY, agent_reply, bluetooth_streams_to_move, clean_ip, clean_mac,
-                  loopback_ids, next_retry_delay, pick_source, should_reconnect, sink_indexes, sink_states,
+from core import (ActivityTracker, ConfigStore, SONY, agent_reply, apply_airplay_item, bluetooth_streams_to_move,
+                  bluez_track, clean_ip, clean_mac, didl_track, loopback_ids, next_retry_delay,
+                  parse_shairport_metadata, pick_source, should_reconnect, sink_indexes, sink_states,
                   sources_playing, transport_state)
 
 SOURCE_NAMES = dict(network='audio perangkat', spotify='Spotify', airplay='AirPlay', bluetooth='Bluetooth', dlna='DLNA')
 # Sinks created on demand (no engine restart); the DLNA unit also creates its own before it starts.
 EXTRA_SINKS = dict(audiohub_bluetooth='AudioHub-Bluetooth', audiohub_dlna='AudioHub-DLNA')
 DLNA_CONTROL = 'http://192.168.8.240:49494/upnp/control/rendertransport1'
+AIRPLAY_METADATA_PIPE = '/run/audiohub/shairport-metadata'
 A2DP_SOURCE_UUID = '0000110a-0000-1000-8000-00805f9b34fb'
 ADAPTER_ALIAS = 'Homelab Audio'
 PAIRING_SECONDS = 120
@@ -144,6 +147,25 @@ def bluetooth_forget(address):
         bus.close()
 
 
+def bluetooth_track():
+    """Title/artist/album the connected phone or Mac reports over AVRCP (the Sony is not a source)."""
+    import dbus
+    bus = dbus.SystemBus(private=True)
+    try:
+        managed = dbus.Interface(bus.get_object('org.bluez', '/'), 'org.freedesktop.DBus.ObjectManager').GetManagedObjects()
+        for path, interfaces in managed.items():
+            player = interfaces.get('org.bluez.MediaPlayer1')
+            if player is None or SONY.replace(':', '_') in str(path):
+                continue
+            track = bluez_track({'Status': str(player.get('Status', '')),
+                                 'Track': {str(key): str(value) for key, value in dict(player.get('Track', {})).items()}})
+            if track:
+                return track
+        return None
+    finally:
+        bus.close()
+
+
 def bluetooth_alias(name):
     import dbus
     bus = dbus.SystemBus(private=True)
@@ -190,6 +212,10 @@ class Controller:
         self.next_reconnect = 0
         self.bt_streaming = False
         self.previous_states = None
+        self.airplay_track = {}
+        self.dlna_track = None
+        self.bt_track = None
+        self.metadata_buffer = b''
         self.bt_devices = []
         self.pair_task = None
         self.pair_until = 0
@@ -223,20 +249,82 @@ class Controller:
             audio_ready=sink is not None, sink_state=sink.get('state') if sink else None)
         return self.cached
 
-    async def dlna_transport_state(self):
-        """PLAYING/STOPPED/PAUSED_PLAYBACK from the renderer; its audio stream stays open after Stop."""
+    async def dlna_request(self, action):
+        """One AVTransport SOAP call to the local renderer: the reply text, or None if it does not answer."""
         envelope = ('<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
                     's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body>'
-                    '<u:GetTransportInfo xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><InstanceID>0</InstanceID>'
-                    '</u:GetTransportInfo></s:Body></s:Envelope>')
+                    '<u:%s xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><InstanceID>0</InstanceID>'
+                    '</u:%s></s:Body></s:Envelope>' % (action, action))
         headers = {'Content-Type': 'text/xml; charset="utf-8"',
-                   'SOAPACTION': '"urn:schemas-upnp-org:service:AVTransport:1#GetTransportInfo"'}
+                   'SOAPACTION': '"urn:schemas-upnp-org:service:AVTransport:1#%s"' % action}
         try:
             async with ClientSession(timeout=ClientTimeout(total=1.5)) as session:
                 async with session.post(DLNA_CONTROL, data=envelope, headers=headers) as response:
-                    return transport_state(await response.text())
+                    return await response.text()
         except (ClientError, asyncio.TimeoutError, OSError):
             return None
+
+    async def dlna_transport_state(self):
+        """PLAYING/STOPPED/PAUSED_PLAYBACK from the renderer; its audio stream stays open after Stop."""
+        reply = await self.dlna_request('GetTransportInfo')
+        return transport_state(reply) if reply else None
+
+    async def dlna_position(self):
+        reply = await self.dlna_request('GetPositionInfo')
+        return didl_track(reply) if reply else None
+
+    def read_pipe(self, fd):
+        try:
+            chunk = os.read(fd, 65536)
+        except OSError:
+            return
+        if chunk:
+            self.feed_airplay_metadata(chunk)
+
+    def feed_airplay_metadata(self, chunk):
+        items, self.metadata_buffer = parse_shairport_metadata(self.metadata_buffer + chunk)
+        for kind, code, data in items:
+            self.airplay_track = apply_airplay_item(self.airplay_track, kind, code, data)
+
+    async def read_airplay_metadata(self):
+        """Follow shairport-sync's metadata pipe. It is opened read-write so it never reports EOF between
+        sessions, and reopened if shairport recreates it."""
+        loop = asyncio.get_running_loop()
+        while True:
+            fd = None
+            try:
+                fd = os.open(AIRPLAY_METADATA_PIPE, os.O_RDWR | os.O_NONBLOCK)
+                info = os.fstat(fd)
+                if not stat.S_ISFIFO(info.st_mode):
+                    raise OSError('bukan pipa')
+                loop.add_reader(fd, self.read_pipe, fd)
+                while os.stat(AIRPLAY_METADATA_PIPE).st_ino == info.st_ino:
+                    await asyncio.sleep(5)
+            except OSError:
+                pass
+            finally:
+                if fd is not None:
+                    loop.remove_reader(fd)
+                    os.close(fd)
+            await asyncio.sleep(5)
+
+    async def refresh_track(self, source, states):
+        """Best effort: reading a title must never get in the way of the audio."""
+        self.dlna_track = self.bt_track = None
+        try:
+            if source == 'dlna' and states.get('audiohub_dlna') == 'RUNNING':
+                self.dlna_track = await self.dlna_position()
+            elif source == 'bluetooth' and states.get('audiohub_bluetooth') == 'RUNNING':
+                self.bt_track = await asyncio.to_thread(bluetooth_track)
+        except Exception as error:
+            log.info('Judul lagu tidak terbaca: %s', str(error)[-90:])
+
+    def now_playing(self):
+        source = self.store.data['source']
+        if (self.previous_states or {}).get('audiohub_' + source) != 'RUNNING':
+            return None
+        track = {'airplay': self.airplay_track, 'dlna': self.dlna_track, 'bluetooth': self.bt_track}.get(source)
+        return dict(track, source=source) if track else None
 
     async def refresh_activity(self):
         """Note which source is playing and follow a new one when the selected source is silent."""
@@ -268,6 +356,7 @@ class Controller:
             self.store.update({'source': source})
             await self.apply(old)
             self.last_action = 'Beralih otomatis ke ' + SOURCE_NAMES[source] + '.'
+        await self.refresh_track(source, states)
 
     async def route_audio(self):
         # The loopback keeps the A2DP transport busy, so it only exists while audio
@@ -597,7 +686,7 @@ class Controller:
         except Exception as error:
             log.warning('Nama adapter Bluetooth tidak diubah: %s', error)
         tasks = [asyncio.create_task(self.loop()), asyncio.create_task(self.watch_audio()),
-                 asyncio.create_task(self.react_to_audio())]
+                 asyncio.create_task(self.react_to_audio()), asyncio.create_task(self.read_airplay_metadata())]
         yield
         tasks += [task for task in (self.reconnect_task, self.pair_task) if task]
         for task in tasks:
@@ -615,7 +704,7 @@ class Controller:
                     receiver=dict(running=bool(self.receiver and self.receiver.returncode is None),
                                   connected=self.receiver_connected, message=self.receiver_message),
                     route_ready=bool(self.cached.get('sink') and self.store.data['speaker_enabled']),
-                    route_active=self.route is not None,
+                    route_active=self.route is not None, now_playing=self.now_playing(),
                     bluetooth_in=dict(pairing=max(0, round(self.pair_until - time.monotonic())), devices=self.bt_devices,
                                       name=ADAPTER_ALIAS, streaming=self.bt_streaming),
                     last_action=self.last_action,
