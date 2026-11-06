@@ -80,6 +80,49 @@ def sources_playing(sink_inputs, indexes, dlna_state):
     return states
 
 
+LOOPBACK_MS = 20
+SAMPLE_RATE = 48000
+
+
+def transport_delays(objects, speaker_path):
+    """A2DP transport delays in ms from BlueZ's managed objects: (speaker we send to, phone we receive from).
+    BlueZ reports the delay in tenths of a millisecond; either is None when no transport is acquired."""
+    speaker = phone = None
+    for path, interfaces in objects.items():
+        transport = interfaces.get('org.bluez.MediaTransport1')
+        if transport is None or 'Delay' not in transport:
+            continue
+        if str(path).startswith(speaker_path + '/'):
+            speaker = int(transport['Delay']) / 10
+        else:
+            phone = int(transport['Delay']) / 10
+    return speaker, phone
+
+
+def latency_report(source, settings, speaker_delay_ms, speaker_live, phone_delay_ms):
+    """Estimated latency per leg. Every figure carries a note saying where it comes from, because only
+    the speaker's A2DP delay is reported by a device; the rest are hub settings or protocol figures,
+    and the true end-to-end latency (it ends in the speaker) cannot be measured from the hub."""
+    quantum_ms = settings['quantum'] / SAMPLE_RATE * 1000
+    known = speaker_delay_ms is not None
+    parts = [dict(name='Bluetooth ke Sony', ms=round(speaker_delay_ms) if known else None,
+                  note='dilaporkan Sony' if speaker_live else 'terakhir dilaporkan Sony'),
+             dict(name='PipeWire', ms=round(quantum_ms), note='pengaturan hub'),
+             dict(name='Loopback', ms=LOOPBACK_MS, note='pengaturan hub')]
+    output = dict(ms=round(speaker_delay_ms + quantum_ms + LOOPBACK_MS) if known else None, parts=parts)
+    inputs = {
+        'network': (settings['buffer_ms'], 'buffer WFAS (pengaturan)'),
+        'airplay': (2000, 'ditetapkan pengirim, ±2 detik pada AirPlay 1; AirPlay 2 bisa berbeda'),
+        'bluetooth': (round(phone_delay_ms) if phone_delay_ms is not None else None,
+                      'dilaporkan hub ke perangkat; belum termasuk buffer pengirim'),
+        'dlna': (None, 'tidak tetap; buffer 2 detik hanya di awal pemutaran'),
+        'spotify': (None, 'tidak tersedia'),
+    }
+    ms, note = inputs.get(source, (None, 'tidak tersedia'))
+    total = ms + output['ms'] if ms is not None and output['ms'] is not None else None
+    return dict(source=source, input=dict(ms=ms, note=note), output=output, total_ms=total)
+
+
 def peer_addresses(text):
     """Distinct remote addresses from `ss -tn state established` output (Peer Address:Port column)."""
     peers = []

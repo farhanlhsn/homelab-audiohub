@@ -6,9 +6,9 @@ import unittest
 from pathlib import Path
 
 from core import (ActivityTracker, ConfigStore, agent_reply, apply_airplay_item, bluetooth_streams_to_move,
-                  bluez_track, clean_ip, clean_mac, connection_list, didl_track, lan_address, loopback_ids,
-                  next_retry_delay, parse_shairport_metadata, peer_addresses, pick_source, should_reconnect,
-                  sink_indexes, sink_states, sources_playing, transport_state)
+                  bluez_track, clean_ip, clean_mac, connection_list, didl_track, lan_address, latency_report,
+                  loopback_ids, next_retry_delay, parse_shairport_metadata, peer_addresses, pick_source,
+                  should_reconnect, sink_indexes, sink_states, sources_playing, transport_delays, transport_state)
 
 SS = ('Recv-Q Send-Q                    Local Address:Port                     Peer Address:Port Process\n'
       '0      0      [2001:db8::240]:7000 [2001:db8::243]:49466\n'
@@ -29,6 +29,63 @@ def item(kind, code, text=None):
     return (body + '</item>\n').encode()
 
 INDEXES = {'audiohub_network': 37, 'audiohub_spotify': 39, 'audiohub_airplay': 41, 'audiohub_bluetooth': 45, 'audiohub_dlna': 46}
+
+
+SONY_DEV = '/org/bluez/hci0/dev_74_68_59_68_28_17'
+SETTINGS = {'buffer_ms': 80, 'quantum': 1024}
+
+
+class LatencyTests(unittest.TestCase):
+    def test_transport_delays_are_split_between_the_speaker_and_the_phone_and_read_in_tenths_of_ms(self):
+        objects = {SONY_DEV + '/sep1/fd0': {'org.bluez.MediaTransport1': {'Delay': 1400}},
+                   '/org/bluez/hci0/dev_CC_08_FA_AF_17_BE/sep2/fd1': {'org.bluez.MediaTransport1': {'Delay': 3575}},
+                   SONY_DEV: {'org.bluez.Device1': {}}}
+        self.assertEqual(transport_delays(objects, SONY_DEV), (140.0, 357.5))
+        self.assertEqual(transport_delays({SONY_DEV + '/sep1/fd0': {'org.bluez.MediaTransport1': {'State': 'idle'}}}, SONY_DEV), (None, None))
+        self.assertEqual(transport_delays({}, SONY_DEV), (None, None))
+
+    def test_speaker_leg_adds_the_reported_a2dp_delay_to_what_the_hub_itself_adds(self):
+        report = latency_report('network', SETTINGS, 140.0, True, None)
+        self.assertEqual(report['output']['ms'], 181)  # 140 + 1024/48000 s (21) + 20 loopback
+        self.assertEqual([part['ms'] for part in report['output']['parts']], [140, 21, 20])
+        self.assertEqual(report['output']['parts'][0]['note'], 'dilaporkan Sony')
+
+    def test_last_known_speaker_delay_is_labelled_as_such(self):
+        report = latency_report('network', SETTINGS, 140.0, False, None)
+        self.assertEqual(report['output']['parts'][0]['note'], 'terakhir dilaporkan Sony')
+
+    def test_without_any_speaker_delay_the_speaker_leg_and_total_are_unknown(self):
+        report = latency_report('network', SETTINGS, None, False, None)
+        self.assertIsNone(report['output']['ms'])
+        self.assertIsNone(report['output']['parts'][0]['ms'])
+        self.assertIsNone(report['total_ms'])
+
+    def test_wfas_input_is_its_configured_buffer_and_the_total_is_the_sum(self):
+        report = latency_report('network', SETTINGS, 140.0, True, None)
+        self.assertEqual((report['input']['ms'], report['total_ms']), (80, 261))
+        self.assertIn('pengaturan', report['input']['note'])
+
+    def test_airplay_input_is_the_protocol_figure_set_by_the_sender(self):
+        report = latency_report('airplay', SETTINGS, 140.0, True, None)
+        self.assertEqual((report['input']['ms'], report['total_ms']), (2000, 2181))
+        self.assertIn('pengirim', report['input']['note'])
+
+    def test_bluetooth_input_is_the_delay_the_hub_reports_to_the_phone(self):
+        report = latency_report('bluetooth', SETTINGS, 140.0, True, 357.5)
+        self.assertEqual(report['input']['ms'], 358)
+        self.assertEqual(report['total_ms'], 539)
+        self.assertIsNone(latency_report('bluetooth', SETTINGS, 140.0, True, None)['input']['ms'])
+
+    def test_sources_without_a_steady_figure_show_no_input_and_no_total(self):
+        for source in ('dlna', 'spotify'):
+            with self.subTest(source=source):
+                report = latency_report(source, SETTINGS, 140.0, True, None)
+                self.assertIsNone(report['input']['ms'])
+                self.assertIsNone(report['total_ms'])
+                self.assertEqual(report['output']['ms'], 181)
+
+    def test_a_larger_quantum_lengthens_the_hub_leg(self):
+        self.assertEqual(latency_report('network', {'buffer_ms': 80, 'quantum': 2048}, 140.0, True, None)['output']['ms'], 203)
 
 
 class ConnectionTests(unittest.TestCase):

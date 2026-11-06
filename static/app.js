@@ -40,6 +40,23 @@ function render(next) {
     row.append(name, type, status); linkList.append(row);
   }
   $('auto-source').checked = next.settings.auto_source;
+  const lat = next.latency;
+  $('latency').hidden = lat.input.ms == null && lat.output.ms == null;
+  const latencyList = $('latency-list'); latencyList.replaceChildren();
+  const latencyRows = [
+    ['Player → hub', lat.input.ms, lat.input.note],
+    ['Hub → Sony', lat.output.ms, lat.output.parts.map(p => `${p.name} ${p.ms == null ? '?' : p.ms + ' ms'} (${p.note})`).join(' · ')],
+  ];
+  if (lat.total_ms != null) latencyRows.push(['Total perkiraan', lat.total_ms, '']);
+  for (const [label, ms, note] of latencyRows) {
+    const row = document.createElement('div'); row.className = 'link';
+    const name = document.createElement('strong'); name.textContent = label;
+    const value = document.createElement('span'); value.className = 'value';
+    value.textContent = ms == null ? 'tidak diketahui' : '≈ ' + (ms >= 1000 ? (ms / 1000).toFixed(1).replace('.', ',') + ' s' : ms + ' ms');
+    row.append(name, value);
+    if (note) { const hint = document.createElement('span'); hint.className = 'note'; hint.textContent = note; row.append(hint); }
+    latencyList.append(row);
+  }
   const track = next.now_playing;
   $('now').hidden = !track;
   if (track) {

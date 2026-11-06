@@ -187,6 +187,41 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(any(call[:3] == ('pactl', 'load-module', 'module-null-sink') and 'sink_name=' + name in call
                                 for call in missing.calls), name)
 
+    async def test_status_reports_latency_and_keeps_the_last_known_speaker_delay(self):
+        reply = {'value': {**SPEAKER, 'delay_ms': 140.0, 'input_delay_ms': None}}
+        with mock.patch('hub.bluetooth', lambda action='status': reply['value']), mock.patch('hub.command', FakePactl()):
+            await self.controller.snapshot()
+            latency = self.controller.status()['latency']
+            self.assertEqual((latency['output']['ms'], latency['input']['ms'], latency['total_ms']), (181, 80, 261))
+            self.assertEqual(latency['output']['parts'][0]['note'], 'dilaporkan Sony')
+            reply['value'] = {**SPEAKER}  # transport released while the speaker idles
+            await self.controller.snapshot()
+        latency = self.controller.status()['latency']
+        self.assertEqual(latency['output']['ms'], 181)
+        self.assertEqual(latency['output']['parts'][0]['note'], 'terakhir dilaporkan Sony')
+
+    async def test_bluetooth_latency_uses_the_delay_the_hub_reports_to_the_phone(self):
+        self.controller.store.update({'source': 'bluetooth'})
+        with mock.patch('hub.bluetooth', lambda action='status': {**SPEAKER, 'delay_ms': 140.0, 'input_delay_ms': 357.5}), \
+                mock.patch('hub.command', FakePactl()):
+            await self.controller.snapshot()
+        latency = self.controller.status()['latency']
+        self.assertEqual((latency['source'], latency['input']['ms'], latency['total_ms']), ('bluetooth', 358, 539))
+
+    async def test_latency_is_unknown_before_the_speaker_ever_reported_a_delay(self):
+        latency = self.controller.status()['latency']
+        self.assertIsNone(latency['output']['ms'])
+        self.assertIsNone(latency['total_ms'])
+
+    async def test_the_loopback_is_loaded_with_the_latency_the_report_assumes(self):
+        from core import LOOPBACK_MS
+        pactl = FakePactl()
+        self.controller.cached = dict(speaker=SPEAKER, sink='bluez_output.sony', sink_index=10)
+        self.controller.activity.touch(time.monotonic())
+        with mock.patch('hub.command', pactl):
+            await self.controller.route_audio()
+        self.assertIn('latency_msec=%d' % LOOPBACK_MS, pactl.loaded_args)
+
     async def test_wfas_keeps_listening_to_its_sender_whatever_source_is_selected(self):
         self.controller.store.update({'sender_ip': '192.168.8.245', 'network_enabled': True, 'source': 'airplay'})
 

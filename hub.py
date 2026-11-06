@@ -17,8 +17,9 @@ from pathlib import Path
 from aiohttp import web, ClientError, ClientSession, ClientTimeout
 from core import (ActivityTracker, ConfigStore, SONY, agent_reply, apply_airplay_item, bluetooth_streams_to_move,
                   bluez_track, clean_ip, clean_mac, clean_text, connection_list, didl_track, lan_address,
-                  loopback_ids, next_retry_delay, parse_shairport_metadata, peer_addresses, pick_source,
-                  should_reconnect, sink_indexes, sink_states, sources_playing, transport_state)
+                  latency_report, loopback_ids, next_retry_delay, parse_shairport_metadata, peer_addresses,
+                  pick_source, should_reconnect, sink_indexes, sink_states, sources_playing, transport_delays,
+                  transport_state, LOOPBACK_MS)
 
 SOURCE_NAMES = dict(network='audio perangkat', spotify='Spotify', airplay='AirPlay', bluetooth='Bluetooth', dlna='DLNA')
 # Sinks created on demand (no engine restart); the DLNA unit also creates its own before it starts.
@@ -83,6 +84,7 @@ def bluetooth(action='status'):
         for obj_path, interfaces in managed.items():
             if str(obj_path) == path and 'org.bluez.Battery1' in interfaces:
                 result['battery'] = int(interfaces['org.bluez.Battery1']['Percentage'])
+        result['delay_ms'], result['input_delay_ms'] = transport_delays(managed, path)
         return result
     finally:
         bus.close()
@@ -211,6 +213,9 @@ class Controller:
         self.reconnect_failures = 0
         self.next_reconnect = 0
         self.bt_streaming = False
+        self.sony_delay_ms = None
+        self.sony_delay_live = False
+        self.input_delay_ms = None
         self.previous_states = None
         self.airplay_track = {}
         self.airplay_peers = []
@@ -241,6 +246,11 @@ class Controller:
             speaker = await asyncio.to_thread(bluetooth)
         except Exception:
             speaker = dict(connected=False, paired=False, trusted=False, name='ULT FIELD 1', address=SONY)
+        # The speaker's A2DP delay only exists while a transport is acquired; keep the last value for display.
+        self.sony_delay_live = speaker.get('delay_ms') is not None
+        if self.sony_delay_live:
+            self.sony_delay_ms = speaker['delay_ms']
+        self.input_delay_ms = speaker.get('input_delay_ms')
         sinks = json.loads(await command('pactl', '-f', 'json', 'list', 'sinks'))
         sink = next((s for s in sinks if s.get('properties', {}).get('api.bluez5.address') == SONY
                      or ('bluez_output.' + SONY.replace(':', '_')) in s.get('name', '')), None)
@@ -389,7 +399,7 @@ class Controller:
         self.route_module = None
         if wanted:
             module_id = await command('pactl', 'load-module', 'module-loopback',
-                f'source={wanted[1]}', f'sink={sink}', 'latency_msec=20', 'source_dont_move=true', 'sink_dont_move=true')
+                f'source={wanted[1]}', f'sink={sink}', f'latency_msec={LOOPBACK_MS}', 'source_dont_move=true', 'sink_dont_move=true')
             self.route_module = int(module_id)
             self.route = wanted
             await command('pactl', 'set-sink-volume', sink, str(self.store.data['volume']) + '%')
@@ -721,6 +731,8 @@ class Controller:
                                   connected=self.receiver_connected, message=self.receiver_message),
                     route_ready=bool(self.cached.get('sink') and self.store.data['speaker_enabled']),
                     route_active=self.route is not None, now_playing=self.now_playing(),
+                    latency=latency_report(self.store.data['source'], self.store.data, self.sony_delay_ms,
+                                           self.sony_delay_live, self.input_delay_ms),
                     connections=connection_list(
                         self.bt_devices, self.airplay_peers, self.airplay_client,
                         self.store.data['sender_ip'] if self.receiver_connected else '',
