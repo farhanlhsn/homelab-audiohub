@@ -16,9 +16,9 @@ from pathlib import Path
 
 from aiohttp import web, ClientError, ClientSession, ClientTimeout
 from core import (ActivityTracker, ConfigStore, SONY, agent_reply, apply_airplay_item, bluetooth_streams_to_move,
-                  bluez_track, clean_ip, clean_mac, didl_track, loopback_ids, next_retry_delay,
-                  parse_shairport_metadata, pick_source, should_reconnect, sink_indexes, sink_states,
-                  sources_playing, transport_state)
+                  bluez_track, clean_ip, clean_mac, clean_text, connection_list, didl_track, lan_address,
+                  loopback_ids, next_retry_delay, parse_shairport_metadata, peer_addresses, pick_source,
+                  should_reconnect, sink_indexes, sink_states, sources_playing, transport_state)
 
 SOURCE_NAMES = dict(network='audio perangkat', spotify='Spotify', airplay='AirPlay', bluetooth='Bluetooth', dlna='DLNA')
 # Sinks created on demand (no engine restart); the DLNA unit also creates its own before it starts.
@@ -213,6 +213,8 @@ class Controller:
         self.bt_streaming = False
         self.previous_states = None
         self.airplay_track = {}
+        self.airplay_peers = []
+        self.airplay_client = ''
         self.dlna_track = None
         self.bt_track = None
         self.metadata_buffer = b''
@@ -285,6 +287,17 @@ class Controller:
         items, self.metadata_buffer = parse_shairport_metadata(self.metadata_buffer + chunk)
         for kind, code, data in items:
             self.airplay_track = apply_airplay_item(self.airplay_track, kind, code, data)
+            if kind == 'ssnc' and code == 'snam':
+                self.airplay_client = clean_text(data.decode('utf-8', 'replace'))
+
+    async def refresh_airplay_peers(self):
+        """Who has an AirPlay 2 session open: the peers of port 7000, an IPv6 one shown by its IPv4 address."""
+        try:
+            peers = peer_addresses(await command('ss', '-tn', 'state', 'established', '( sport = :7000 )'))
+            neighbors = await command('ip', 'neigh') if any(':' in peer for peer in peers) else ''
+            self.airplay_peers = list(dict.fromkeys(lan_address(peer, neighbors) for peer in peers))
+        except Exception as error:
+            log.info('Sesi AirPlay tidak terbaca: %s', str(error)[-90:])
 
     async def read_airplay_metadata(self):
         """Follow shairport-sync's metadata pipe. It is opened read-write so it never reports EOF between
@@ -348,7 +361,7 @@ class Controller:
         states = sources_playing(inputs, indexes, await self.dlna_transport_state() if dlna_open else None)
         self.bt_streaming = states['audiohub_bluetooth'] == 'RUNNING'
         old = dict(self.store.data)
-        source = pick_source(old['source'], states, self.previous_states)
+        source = pick_source(old['source'], states, self.previous_states) if old['auto_source'] else old['source']
         self.previous_states = states
         if states.get('audiohub_' + source) == 'RUNNING':
             self.activity.touch(time.monotonic())
@@ -419,7 +432,9 @@ class Controller:
 
     async def sync_receiver(self):
         data = self.store.data
-        wanted = (data['sender_ip'], data['buffer_ms']) if data['network_enabled'] and data['sender_ip'] and data['source'] == 'network' else None
+        # Once "Dengarkan" is on, keep listening to that sender whichever source is selected:
+        # its audio then joins the automatic source switching like every other source.
+        wanted = (data['sender_ip'], data['buffer_ms']) if data['network_enabled'] and data['sender_ip'] else None
         if not wanted:
             if self.receiver:
                 await self.stop_receiver()
@@ -447,7 +462,7 @@ class Controller:
         await command('pw-metadata', '-n', 'settings', '0', 'clock.force-quantum', str(data['quantum']))
         if self.cached.get('sink'):
             await command('pactl', 'set-sink-volume', self.cached['sink'], str(data['volume']) + '%')
-        if any(old.get(k) != data[k] for k in ('sender_ip', 'buffer_ms', 'network_enabled', 'source')):
+        if any(old.get(k) != data[k] for k in ('sender_ip', 'buffer_ms', 'network_enabled')):
             await self.stop_receiver()
             self.last_receiver_attempt = 0
         await self.route_audio()
@@ -626,6 +641,7 @@ class Controller:
             await self.sync_receiver()
         self.maybe_reconnect()
         await self.refresh_bluetooth_inputs()
+        await self.refresh_airplay_peers()
 
     async def watch_audio(self):
         # React to sink changes at once instead of waiting for the next tick, so audio that
@@ -705,6 +721,10 @@ class Controller:
                                   connected=self.receiver_connected, message=self.receiver_message),
                     route_ready=bool(self.cached.get('sink') and self.store.data['speaker_enabled']),
                     route_active=self.route is not None, now_playing=self.now_playing(),
+                    connections=connection_list(
+                        self.bt_devices, self.airplay_peers, self.airplay_client,
+                        self.store.data['sender_ip'] if self.receiver_connected else '',
+                        self.peers.get(self.store.data['sender_ip'], {}).get('name', ''), self.previous_states or {}),
                     bluetooth_in=dict(pairing=max(0, round(self.pair_until - time.monotonic())), devices=self.bt_devices,
                                       name=ADAPTER_ALIAS, streaming=self.bt_streaming),
                     last_action=self.last_action,

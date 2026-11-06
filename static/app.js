@@ -30,6 +30,16 @@ function render(next) {
   $('pair').hidden = next.speaker.paired;
   $('auto').checked = next.settings.auto_reconnect;
   $('route-status').textContent = next.route_active ? 'Diteruskan ke Sony' : next.route_ready ? 'Siaga · menunggu audio' : 'Menunggu speaker';
+  $('links').hidden = !next.connections.length;
+  const linkList = $('link-list'); linkList.replaceChildren();
+  for (const link of next.connections) {
+    const row = document.createElement('div'); row.className = 'link';
+    const name = document.createElement('strong'); name.textContent = link.name;
+    const type = document.createElement('span'); type.className = 'type'; type.textContent = link.type;
+    const status = document.createElement('span'); status.className = 'muted'; status.textContent = link.playing ? 'Memutar' : 'Tersambung';
+    row.append(name, type, status); linkList.append(row);
+  }
+  $('auto-source').checked = next.settings.auto_source;
   const track = next.now_playing;
   $('now').hidden = !track;
   if (track) {
@@ -106,7 +116,8 @@ async function refresh() {
 }
 $('connect').onclick = () => act('/api/speaker/connect', {});
 $('disconnect').onclick = () => act('/api/speaker/disconnect', {});
-$('bt-pair').onclick = () => act('/api/bluetooth/' + (state.bluetooth_in.pairing ? 'cancel' : 'pair'), {});
+$('auto-source').onchange = () => act('/api/settings', {auto_source: $('auto-source').checked}, $('auto-source').checked ? 'Sumber dipilih otomatis.' : 'Sumber dikunci sesuai pilihan.');
+$('bt-pair').onclick =() => act('/api/bluetooth/' + (state.bluetooth_in.pairing ? 'cancel' : 'pair'), {});
 $('pair').onclick =() => act('/api/speaker/pair', {}, 'Permintaan pairing selesai.');
 $('test').onclick = () => act('/api/speaker/test', {}, 'Nada uji dikirim ke Sony.');
 $('auto').onchange = () => act('/api/settings', {auto_reconnect: $('auto').checked});

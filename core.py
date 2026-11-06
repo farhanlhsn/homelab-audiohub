@@ -12,7 +12,7 @@ SONY = '74:68:59:68:28:17'
 SOURCES = ('bluetooth', 'airplay', 'dlna', 'spotify', 'network')
 DEFAULTS = dict(source='network', sender_ip='', buffer_ms=80, quantum=1024,
                 volume=30, auto_reconnect=True, speaker_enabled=True,
-                network_enabled=False)
+                network_enabled=False, auto_source=True)
 
 
 def clean_ip(value):
@@ -78,6 +78,50 @@ def sources_playing(sink_inputs, indexes, dlna_state):
             playing = playing and dlna_state == 'PLAYING'
         states[name] = 'RUNNING' if playing else 'IDLE'
     return states
+
+
+def peer_addresses(text):
+    """Distinct remote addresses from `ss -tn state established` output (Peer Address:Port column)."""
+    peers = []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) >= 4 and fields[0].isdigit():
+            peer = fields[3].rsplit(':', 1)[0].strip('[]')
+            if peer and peer not in peers:
+                peers.append(peer)
+    return peers
+
+
+def lan_address(peer, neighbors):
+    """An IPv6 peer is shown by the IPv4 address of the same device, matched by MAC in `ip neigh` output."""
+    if ':' not in peer:
+        return peer
+    macs = {}
+    for line in neighbors.splitlines():
+        fields = line.split()
+        if len(fields) >= 5 and 'lladdr' in fields:
+            macs[fields[0]] = fields[fields.index('lladdr') + 1].lower()
+    mac = macs.get(peer)
+    if mac:
+        for address, other in macs.items():
+            if other == mac and address.count('.') == 3:
+                return address
+    return peer
+
+
+def connection_list(bt_devices, airplay_peers, airplay_name, wfas_ip, wfas_name, states):
+    """Connected devices with their connection type. DLNA has no persistent link, so it is listed while playing."""
+    def playing(source):
+        return states.get('audiohub_' + source) == 'RUNNING'
+    rows = [dict(name=device['name'], type='Bluetooth', playing=playing('bluetooth'))
+            for device in bt_devices if device.get('connected')]
+    rows += [dict(name=airplay_name if airplay_name and len(airplay_peers) == 1 else peer, type='AirPlay', playing=playing('airplay'))
+             for peer in airplay_peers]
+    if playing('dlna'):
+        rows.append(dict(name='Pemutar DLNA', type='DLNA', playing=True))
+    if wfas_ip:
+        rows.append(dict(name=wfas_name or wfas_ip, type='Wi-Fi (WFAS)', playing=playing('network')))
+    return rows
 
 
 MAX_TEXT = 120
@@ -224,7 +268,7 @@ class ConfigStore:
                 raise ValueError(f'{key} harus berada antara {low} dan {high}.')
         if type(data['quantum']) is not int or data['quantum'] not in (256, 512, 1024, 2048):
             raise ValueError('Quantum harus 256, 512, 1024, atau 2048 sampel.')
-        for key in ('auto_reconnect', 'speaker_enabled', 'network_enabled'):
+        for key in ('auto_reconnect', 'speaker_enabled', 'network_enabled', 'auto_source'):
             if type(data[key]) is not bool:
                 raise ValueError(f'{key} harus berupa boolean.')
         if data['sender_ip'] != '':

@@ -6,9 +6,18 @@ import unittest
 from pathlib import Path
 
 from core import (ActivityTracker, ConfigStore, agent_reply, apply_airplay_item, bluetooth_streams_to_move,
-                  bluez_track, clean_ip, clean_mac, didl_track, loopback_ids, next_retry_delay,
-                  parse_shairport_metadata, pick_source, should_reconnect, sink_indexes, sink_states,
-                  sources_playing, transport_state)
+                  bluez_track, clean_ip, clean_mac, connection_list, didl_track, lan_address, loopback_ids,
+                  next_retry_delay, parse_shairport_metadata, peer_addresses, pick_source, should_reconnect,
+                  sink_indexes, sink_states, sources_playing, transport_state)
+
+SS = ('Recv-Q Send-Q                    Local Address:Port                     Peer Address:Port Process\n'
+      '0      0      [2001:db8::240]:7000 [2001:db8::243]:49466\n'
+      '0      0                              192.168.8.240:7000                   192.168.8.249:51022\n'
+      '0      0      [2001:db8::240]:7000 [2001:db8::243]:49470\n')
+NEIGH = ('192.168.8.243 dev enx00e04c398dc8 lladdr 02:00:00:00:00:43 REACHABLE\n'
+         '192.168.8.249 dev enx00e04c398dc8 lladdr 02:00:00:00:00:49 REACHABLE\n'
+         '2001:db8::243 dev enx00e04c398dc8 lladdr 02:00:00:00:00:43 STALE\n'
+         'fe80::1 dev enx00e04c398dc8 lladdr aa:bb:cc:dd:ee:ff router STALE\n')
 
 
 def item(kind, code, text=None):
@@ -20,6 +29,49 @@ def item(kind, code, text=None):
     return (body + '</item>\n').encode()
 
 INDEXES = {'audiohub_network': 37, 'audiohub_spotify': 39, 'audiohub_airplay': 41, 'audiohub_bluetooth': 45, 'audiohub_dlna': 46}
+
+
+class ConnectionTests(unittest.TestCase):
+    def test_peers_are_read_from_ss_output_once_each(self):
+        self.assertEqual(peer_addresses(SS), ['2001:db8::243', '192.168.8.249'])
+        self.assertEqual(peer_addresses(''), [])
+        self.assertEqual(peer_addresses('Recv-Q Send-Q Local Address:Port Peer Address:Port\n'), [])
+
+    def test_an_ipv6_peer_is_shown_by_the_ipv4_address_of_the_same_device(self):
+        self.assertEqual(lan_address('2001:db8::243', NEIGH), '192.168.8.243')
+        self.assertEqual(lan_address('192.168.8.249', NEIGH), '192.168.8.249')
+        self.assertEqual(lan_address('2001:db8::dead', NEIGH), '2001:db8::dead')
+        self.assertEqual(lan_address('fe80::1', NEIGH), 'fe80::1')
+
+    def test_connections_list_every_connected_device_with_its_connection_type(self):
+        states = {'audiohub_bluetooth': 'RUNNING', 'audiohub_airplay': 'IDLE', 'audiohub_dlna': 'IDLE', 'audiohub_network': 'IDLE'}
+        devices = [dict(name='Xiaomi', connected=True), dict(name='Mac', connected=False)]
+        rows = connection_list(devices, ['192.168.8.243'], '', '192.168.8.245', 'PC Kantor', states)
+        self.assertEqual(rows, [dict(name='Xiaomi', type='Bluetooth', playing=True),
+                                dict(name='192.168.8.243', type='AirPlay', playing=False),
+                                dict(name='PC Kantor', type='Wi-Fi (WFAS)', playing=False)])
+
+    def test_airplay_client_name_is_used_only_when_it_is_unambiguous(self):
+        self.assertEqual(connection_list([], ['192.168.8.243'], "Farhan's Mac", '', '', {})[0]['name'], "Farhan's Mac")
+        names = [row['name'] for row in connection_list([], ['192.168.8.243', '192.168.8.249'], "Farhan's Mac", '', '', {})]
+        self.assertEqual(names, ['192.168.8.243', '192.168.8.249'])
+
+    def test_dlna_appears_only_while_it_plays_and_nothing_connected_gives_an_empty_list(self):
+        self.assertEqual(connection_list([], [], '', '', '', {'audiohub_dlna': 'RUNNING'}),
+                         [dict(name='Pemutar DLNA', type='DLNA', playing=True)])
+        self.assertEqual(connection_list([], [], '', '', '', {}), [])
+
+    def test_wfas_unnamed_sender_falls_back_to_its_address(self):
+        self.assertEqual(connection_list([], [], '', '192.168.8.245', '', {})[0]['name'], '192.168.8.245')
+
+    def test_auto_source_is_on_by_default_survives_restart_and_must_be_boolean(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = ConfigStore(Path(d) / 'settings.json')
+            self.assertTrue(store.data['auto_source'])
+            store.update({'auto_source': False})
+            self.assertFalse(ConfigStore(Path(d) / 'settings.json').data['auto_source'])
+            with self.assertRaises(ValueError):
+                store.update({'auto_source': 'yes'})
 
 
 class NowPlayingTests(unittest.TestCase):

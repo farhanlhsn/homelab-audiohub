@@ -10,7 +10,7 @@ from aiohttp.test_utils import TestClient, TestServer
 import asyncio
 from core import sink_indexes
 from hub import Controller, make_app, sender_available
-from test_core import item
+from test_core import NEIGH, SS, item
 
 SPEAKER = dict(connected=True, paired=True, bonded=True, trusted=True, name='ULT FIELD 1')
 LOOPBACK = '536870919\tmodule-loopback\tsource=audiohub_network.monitor sink=bluez_output.sony latency_msec=20\t\n'
@@ -186,6 +186,63 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         for name in ('audiohub_bluetooth', 'audiohub_dlna'):
             self.assertTrue(any(call[:3] == ('pactl', 'load-module', 'module-null-sink') and 'sink_name=' + name in call
                                 for call in missing.calls), name)
+
+    async def test_wfas_keeps_listening_to_its_sender_whatever_source_is_selected(self):
+        self.controller.store.update({'sender_ip': '192.168.8.245', 'network_enabled': True, 'source': 'airplay'})
+
+        async def absent(ip, port=9090):
+            return False
+        with mock.patch('hub.sender_available', absent):
+            await self.controller.sync_receiver()
+        self.assertIn('Menunggu WFAS', self.controller.receiver_message)
+
+    async def test_switching_source_does_not_restart_the_wfas_receiver(self):
+        self.controller.store.update({'sender_ip': '192.168.8.245', 'network_enabled': True, 'source': 'network'})
+        old = dict(self.controller.store.data)
+        self.controller.store.update({'source': 'airplay'})
+        stop = mock.AsyncMock()
+        with mock.patch('hub.command', FakePactl()), mock.patch.object(self.controller, 'stop_receiver', stop), \
+                mock.patch.object(self.controller, 'sync_receiver', mock.AsyncMock()):
+            await self.controller.apply(old)
+        stop.assert_not_awaited()
+
+    async def test_turning_auto_source_off_keeps_the_selected_source(self):
+        airplay = json.dumps([{'index': 11172, 'sink': 41, 'corked': False, 'properties': {'node.name': 'AudioHub AirPlay'}}])
+        pactl = FakePactl(sinks='37\taudiohub_network\tPipeWire\tfloat32le 2ch 48000Hz\tIDLE\n'
+                                '41\taudiohub_airplay\tPipeWire\tfloat32le 2ch 44100Hz\tRUNNING\n', sink_inputs=airplay)
+        self.controller.store.update({'auto_source': False})
+        self.controller.cached = dict(speaker=SPEAKER, sink='bluez_output.sony', sink_index=10)
+        with mock.patch('hub.command', pactl):
+            await self.controller.refresh_activity()
+        self.assertEqual(self.controller.store.data['source'], 'network')
+
+    async def test_status_lists_connected_devices_with_their_connection_type(self):
+        self.controller.bt_devices = [dict(address='AA:BB:CC:DD:EE:01', name='Xiaomi', connected=True, paired=True, trusted=True)]
+        self.controller.airplay_peers = ['192.168.8.243']
+        self.controller.airplay_client = "Farhan's PC"
+        self.controller.previous_states = {'audiohub_airplay': 'RUNNING'}
+        self.assertEqual(self.controller.status()['connections'],
+                         [dict(name='Xiaomi', type='Bluetooth', playing=False), dict(name="Farhan's PC", type='AirPlay', playing=True)])
+
+    async def test_airplay_peers_come_from_ss_and_are_shown_by_ipv4(self):
+        async def fake(*args, **kwargs):
+            return {'ss': SS, 'ip': NEIGH}[args[0]]
+        with mock.patch('hub.command', fake):
+            await self.controller.refresh_airplay_peers()
+        self.assertEqual(self.controller.airplay_peers, ['192.168.8.243', '192.168.8.249'])
+
+    async def test_a_failing_ss_call_leaves_the_list_untouched(self):
+        self.controller.airplay_peers = ['192.168.8.243']
+
+        async def broken(*args, **kwargs):
+            raise RuntimeError('ss gagal')
+        with mock.patch('hub.command', broken):
+            await self.controller.refresh_airplay_peers()
+        self.assertEqual(self.controller.airplay_peers, ['192.168.8.243'])
+
+    async def test_airplay_client_name_comes_from_the_metadata_stream(self):
+        self.controller.feed_airplay_metadata(item('ssnc', 'snam', "Farhan's Mac"))
+        self.assertEqual(self.controller.airplay_client, "Farhan's Mac")
 
     async def test_airplay_pipe_data_becomes_the_now_playing_title_only_while_airplay_plays(self):
         reader, writer = os.pipe()
