@@ -15,10 +15,12 @@ LOOPBACK = '536870919\tmodule-loopback\tsource=audiohub_network.monitor sink=blu
 class FakePactl:
     """Stands in for hub.command and records what the controller asks PipeWire to do."""
 
-    def __init__(self, sinks='', loaded=False):
+    def __init__(self, sinks='', loaded=False, sources=''):
         self.calls = []
         self.sinks = sinks
+        self.sources = sources
         self.loaded = loaded
+        self.loaded_args = None
 
     async def __call__(self, *args, **kwargs):
         self.calls.append(args)
@@ -26,6 +28,10 @@ class FakePactl:
             return LOOPBACK if self.loaded else ''
         if args[:4] == ('pactl', 'list', 'short', 'sinks'):
             return self.sinks
+        if args[:4] == ('pactl', 'list', 'short', 'sources'):
+            return self.sources
+        if args[:2] == ('pactl', 'load-module'):
+            self.loaded_args = args
         if args[:2] == ('pactl', 'load-module'):
             self.loaded = True
             return '536870919'
@@ -37,6 +43,36 @@ class FakePactl:
 
     def count(self, verb):
         return sum(1 for call in self.calls if call[:2] == ('pactl', verb))
+
+
+PHONE = 'bluez_input.AA_BB_CC_DD_EE_01.2'
+
+
+class FakeBluetoothctl:
+    """A bluetoothctl that prints some prompts, then stays quiet like a real one."""
+
+    def __init__(self, lines):
+        self.sent = []
+        self.returncode = None
+        self.stdin = self
+        self.stdout = self.output(lines)
+
+    async def output(self, lines):
+        for line in lines:
+            yield line.encode()
+        await asyncio.sleep(3600)
+
+    def write(self, data):
+        self.sent.append(data.decode().strip())
+
+    def is_closing(self):
+        return False
+
+    async def wait(self):
+        self.returncode = 0
+
+    def kill(self):
+        self.returncode = -9
 
 
 class ApiTests(unittest.IsolatedAsyncioTestCase):
@@ -73,6 +109,43 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_rebinding_host_cannot_read_status(self):
         response = await self.client.get('/api/status', headers={'Host': 'attacker.example'})
         self.assertEqual(response.status, 403)
+
+    async def test_bluetooth_calls_need_the_token_and_reject_bad_input(self):
+        self.assertEqual((await self.client.post('/api/bluetooth/pair', json={})).status, 403)
+        for action, body in [('reboot', {}), ('forget', {'address': '74:68:59:68:28:17'}),
+                             ('forget', {'address': 'not-a-mac'}), ('forget', [1])]:
+            with self.subTest(action=action, body=body):
+                response = await self.client.post('/api/bluetooth/' + action, json=body, headers=self.headers())
+                self.assertEqual(response.status, 400)
+
+    async def test_pairing_window_answers_prompts_trusts_new_devices_and_closes(self):
+        process = FakeBluetoothctl(['[agent] Confirm passkey 123456 (yes/no): ', '[CHG] Device AA:BB:CC:DD:EE:01 Paired: yes\r\n',
+                                    '[CHG] Device 74:68:59:68:28:17 Paired: yes'])
+        async def spawn(*args, **kwargs):
+            return process
+        with mock.patch('hub.asyncio.create_subprocess_exec', spawn), mock.patch('hub.bluetooth_devices', lambda: []):
+            await self.controller.start_pairing()
+            await asyncio.sleep(.1)
+            self.assertGreater(self.controller.status()['bluetooth_in']['pairing'], 100)
+            await self.controller.stop_pairing()
+        self.assertEqual(process.sent, ['default-agent', 'pairable on', 'discoverable on', 'yes',
+                                        'trust AA:BB:CC:DD:EE:01', 'discoverable off', 'pairable off', 'quit'])
+        self.assertEqual(self.controller.status()['bluetooth_in']['pairing'], 0)
+
+    async def test_phone_audio_is_routed_to_the_sony_only_while_it_streams(self):
+        pactl = FakePactl(sources=f'7\t{PHONE}\tPipeWire\ts16le 2ch 44100Hz\tRUNNING\n')
+        self.controller.cached = dict(speaker=SPEAKER, sink='bluez_output.sony', sink_index=10)
+        with mock.patch('hub.command', pactl):
+            await self.controller.refresh_activity()
+            await self.controller.route_audio()
+            self.assertEqual(self.controller.store.data['source'], 'bluetooth')
+            self.assertIn(f'source={PHONE}', pactl.loaded_args)
+            pactl.sources = ''
+            self.controller.activity.last_active = None
+            await self.controller.refresh_activity()
+            await self.controller.route_audio()
+        self.assertFalse(pactl.loaded)
+        self.assertIsNone(self.controller.bt_input)
 
     async def test_unknown_operation_is_rejected(self):
         response = await self.client.post('/api/speaker/reboot', json={}, headers=self.headers())

@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 SONY = '74:68:59:68:28:17'
-SOURCES = ('airplay', 'spotify', 'network')
+SOURCES = ('bluetooth', 'airplay', 'spotify', 'network')
 DEFAULTS = dict(source='network', sender_ip='', buffer_ms=80, quantum=1024,
                 volume=30, auto_reconnect=True, speaker_enabled=True,
                 network_enabled=False)
@@ -51,6 +51,27 @@ def sink_states(text):
     return states
 
 
+def bluetooth_input(sources):
+    """Name of the connected phone/PC whose audio we receive, preferring one that is playing."""
+    names = [name for name in sources if name.startswith('bluez_input.')]
+    return next((name for name in names if sources[name] == 'RUNNING'), names[0] if names else None)
+
+
+ANSI = re.compile(r'\x1b\[[0-9;?]*[A-Za-z]|[\x01\x02\r]')
+PAIRED = re.compile(r'Device ((?:[0-9A-F]{2}:){5}[0-9A-F]{2}) Paired: yes\s*$')
+
+
+def agent_reply(line):
+    """Answer for one line of bluetoothctl output while the pairing window is open."""
+    line = ANSI.sub('', line).strip()
+    if '(yes/no)' in line:
+        return 'yes'
+    found = PAIRED.search(line)
+    if found and found.group(1) != SONY:
+        return 'trust ' + found.group(1)
+    return None
+
+
 def pick_source(current, states):
     """Follow whichever source starts playing when the selected one is silent."""
     if states.get('audiohub_' + current) == 'RUNNING':
@@ -79,7 +100,8 @@ def loopback_ids(text):
     result = []
     for line in text.splitlines():
         fields = line.split('\t')
-        if len(fields) >= 3 and fields[1] == 'module-loopback' and 'source=audiohub_' in fields[2]:
+        if (len(fields) >= 3 and fields[1] == 'module-loopback'
+                and ('source=audiohub_' in fields[2] or 'source=bluez_input.' in fields[2])):
             result.append(int(fields[0]))
     return result
 
@@ -95,7 +117,7 @@ class ConfigStore:
         if not isinstance(patch, dict) or set(patch) - set(DEFAULTS):
             raise ValueError('Pengaturan tidak dikenal.')
         data = {**self.data, **patch}
-        if data['source'] not in ('network', 'spotify', 'airplay'):
+        if data['source'] not in SOURCES:
             raise ValueError('Sumber audio tidak valid.')
         for key, low, high in [('volume', 0, 100), ('buffer_ms', 20, 250)]:
             if type(data[key]) is not int or not low <= data[key] <= high:

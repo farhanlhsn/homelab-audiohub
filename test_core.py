@@ -3,11 +3,39 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from core import (ActivityTracker, ConfigStore, clean_ip, clean_mac, loopback_ids,
-                  next_retry_delay, pick_source, should_reconnect, sink_states)
+from core import (ActivityTracker, ConfigStore, agent_reply, bluetooth_input, clean_ip, clean_mac,
+                  loopback_ids, next_retry_delay, pick_source, should_reconnect, sink_states)
 
 
 class CoreTests(unittest.TestCase):
+    def test_pairing_agent_confirms_prompts_and_trusts_new_devices(self):
+        self.assertEqual(agent_reply('[agent] Confirm passkey 123456 (yes/no): '), 'yes')
+        self.assertEqual(agent_reply('\x1b[0;94m[agent]\x1b[0m Authorize service 0000110d (yes/no):'), 'yes')
+        self.assertEqual(agent_reply('[CHG] Device AA:BB:CC:DD:EE:01 Paired: yes'), 'trust AA:BB:CC:DD:EE:01')
+        self.assertEqual(agent_reply('\x1b[0;93m[CHG]\x1b[0m Device AA:BB:CC:DD:EE:01 Paired: yes\r'), 'trust AA:BB:CC:DD:EE:01')
+
+    def test_pairing_agent_ignores_the_speaker_and_unrelated_output(self):
+        self.assertIsNone(agent_reply('[CHG] Device 74:68:59:68:28:17 Paired: yes'))
+        self.assertIsNone(agent_reply('[CHG] Device AA:BB:CC:DD:EE:01 Connected: yes'))
+        self.assertIsNone(agent_reply('[CHG] Device AA:BB:CC:DD:EE:01 Paired: yes; rm -rf /'))
+        self.assertIsNone(agent_reply(''))
+
+    def test_bluetooth_input_prefers_the_device_that_is_playing(self):
+        sources = {'audiohub_network.monitor': 'IDLE', 'bluez_input.AA_BB.2': 'IDLE', 'bluez_input.CC_DD.2': 'RUNNING'}
+        self.assertEqual(bluetooth_input(sources), 'bluez_input.CC_DD.2')
+        self.assertEqual(bluetooth_input({'bluez_input.AA_BB.2': 'SUSPENDED'}), 'bluez_input.AA_BB.2')
+        self.assertIsNone(bluetooth_input({'audiohub_network.monitor': 'RUNNING'}))
+
+    def test_loopbacks_from_bluetooth_inputs_are_ours_too(self):
+        output = '9\tmodule-loopback\tsource=bluez_input.AA_BB.2 sink=bluez_output.SONY\t\n10\tmodule-loopback\tsource=other sink=x\t\n'
+        self.assertEqual(loopback_ids(output), [9])
+
+    def test_bluetooth_is_a_valid_source_and_followed_when_it_plays(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = ConfigStore(Path(d) / 'settings.json')
+            self.assertEqual(store.update({'source': 'bluetooth'})['source'], 'bluetooth')
+        self.assertEqual(pick_source('network', {'audiohub_bluetooth': 'RUNNING'}), 'bluetooth')
+
     def test_loopback_ids_use_real_pactl_short_output(self):
         output = '536870912\tmodule-null-sink\tsink_name=audiohub_network\t\n536870925\tmodule-loopback\tsource=audiohub_network.monitor sink=bluez_output.SONY\t\n536870926\tmodule-loopback\tsource=other.monitor sink=other\t\n'
         self.assertEqual(loopback_ids(output), [536870925])

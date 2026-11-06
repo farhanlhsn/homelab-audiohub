@@ -34,7 +34,7 @@
       </section>
       <section class="source panel" aria-labelledby="source-title">
         <div class="section-head"><h2 id="source-title">Sumber audio</h2><span id="route-status" class="muted small-text">Menunggu speaker</span></div>
-        <div class="tabs" role="tablist" aria-label="Pilih sumber"><button role="tab" aria-selected="true" data-source="network">Suara perangkat</button><button role="tab" aria-selected="false" data-source="spotify">Spotify</button><button role="tab" aria-selected="false" data-source="airplay">AirPlay</button></div>
+        <div class="tabs" role="tablist" aria-label="Pilih sumber"><button role="tab" aria-selected="true" data-source="network">Suara perangkat</button><button role="tab" aria-selected="false" data-source="spotify">Spotify</button><button role="tab" aria-selected="false" data-source="airplay">AirPlay</button><button role="tab" aria-selected="false" data-source="bluetooth">Bluetooth</button></div>
         <div id="network-pane" class="source-pane">
           <h3>Audio dari HP atau komputer</h3><p class="muted">Jalankan WFAS dalam mode <strong>Send / Server</strong> di perangkat pengirim, lalu pilih perangkatnya di sini.</p>
           <div id="peers" class="peers"><p class="empty">Belum ada pengirim terdeteksi. Mulai WFAS atau masukkan IP perangkat.</p></div>
@@ -46,7 +46,13 @@
           <div class="service-icon spotify-icon" aria-hidden="true">♫</div><h3>Putar langsung dari Spotify</h3><p class="muted">Di aplikasi Spotify, buka pilihan perangkat lalu pilih <strong>Homelab Sony</strong>. HP atau laptop menjadi remote, musik diputar oleh homelab.</p><p class="hint">Memerlukan Spotify Premium. Login tetap dilakukan melalui aplikasi Spotify.</p><div id="spotify-status" class="service-note">Menunggu pemutaran dari Spotify.</div>
         </div>
         <div id="airplay-pane" class="source-pane" hidden>
-          <div class="service-icon" aria-hidden="true">◈</div><h3>Pilih dari menu suara Mac</h3><p class="muted">Buka <strong>Control Center → Sound</strong> di MacBook, lalu pilih <strong>Homelab Sony</strong>.</p><p class="hint">AirPlay praktis untuk musik. Untuk video dengan respons lebih cepat, coba WFAS. Sinkronisasi gambar dan suara bergantung pada aplikasi pemutar.</p>
+          <div class="service-icon" aria-hidden="true">◈</div><h3>Pilih dari menu suara Mac</h3><p class="muted">Buka <strong>Control Center → Sound</strong> di MacBook, lalu pilih <strong>Homelab Sony</strong>.</p><p class="hint">AirPlay praktis untuk musik. Pause dan resume tertunda sekitar 2 detik karena sifat AirPlay; untuk video, coba Bluetooth.</p>
+        </div>
+        <div id="bluetooth-pane" class="source-pane" hidden>
+          <div class="service-icon" aria-hidden="true">◉</div><h3>Sambungkan lewat Bluetooth biasa</h3><p class="muted">Pasangkan Mac, HP, atau PC ke <strong id="bt-name">Homelab Audio</strong> seperti ke speaker Bluetooth, lalu pilih sebagai output suara. Tidak perlu aplikasi tambahan.</p>
+          <div class="pair-row"><button id="bt-pair" class="primary">Pasangkan perangkat baru</button><span id="bt-state" class="pair-state" role="status"></span></div>
+          <div id="bt-devices" class="peers"><p class="empty">Belum ada perangkat yang dipasangkan.</p></div>
+          <p class="hint">Tidak ada jeda 2 detik seperti AirPlay, tetapi audio melewati dua lompatan Bluetooth (perangkat → hub → Sony) sehingga ada tambahan delay. Sinkronisasi video bergantung pada pemutar.</p>
         </div>
       </section>
     </div>

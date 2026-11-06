@@ -55,6 +55,25 @@ function render(next) {
     const ip = document.createElement('span'); ip.textContent = peer.ip;
     button.append(name, ip); button.onclick = () => act('/api/settings', {sender_ip: peer.ip, network_enabled: true, source: 'network'}, 'Menghubungkan audio perangkat.'); peers.append(button);
   }
+  const bt = next.bluetooth_in;
+  $('bt-name').textContent = bt.name;
+  $('bt-pair').textContent = bt.pairing ? 'Batalkan pairing' : 'Pasangkan perangkat baru';
+  $('bt-state').textContent = bt.pairing ? `Mode pairing aktif ${bt.pairing} dtk. Di perangkat, cari “${bt.name}”.` : bt.streaming ? 'Menerima audio dari perangkat.' : '';
+  const devices = $('bt-devices'); devices.replaceChildren();
+  if (!bt.devices.length) {
+    const p = document.createElement('p'); p.className = 'empty';
+    p.textContent = 'Belum ada perangkat yang dipasangkan.'; devices.append(p);
+  } else for (const device of bt.devices) {
+    const row = document.createElement('div'); row.className = 'peer device';
+    const info = document.createElement('div');
+    const name = document.createElement('strong'); name.textContent = device.name;
+    const status = document.createElement('span'); status.textContent = device.connected ? 'Tersambung' : 'Dipasangkan';
+    info.append(name, document.createElement('br'), status);
+    const forget = document.createElement('button'); forget.className = 'text-button'; forget.textContent = 'Hapus';
+    forget.setAttribute('aria-label', 'Hapus ' + device.name);
+    forget.onclick = () => act('/api/bluetooth/forget', {address: device.address}, 'Perangkat dihapus.');
+    row.append(info, forget); devices.append(row);
+  }
   $('updated').textContent = 'Diperbarui ' + new Date().toLocaleTimeString('id-ID');
   if (next.error) $('route-status').textContent = 'Perlu perhatian: ' + next.error;
 }
@@ -81,7 +100,8 @@ async function refresh() {
 }
 $('connect').onclick = () => act('/api/speaker/connect', {});
 $('disconnect').onclick = () => act('/api/speaker/disconnect', {});
-$('pair').onclick = () => act('/api/speaker/pair', {}, 'Permintaan pairing selesai.');
+$('bt-pair').onclick = () => act('/api/bluetooth/' + (state.bluetooth_in.pairing ? 'cancel' : 'pair'), {});
+$('pair').onclick =() => act('/api/speaker/pair', {}, 'Permintaan pairing selesai.');
 $('test').onclick = () => act('/api/speaker/test', {}, 'Nada uji dikirim ke Sony.');
 $('auto').onchange = () => act('/api/settings', {auto_reconnect: $('auto').checked});
 $('volume').oninput = () => { $('volume-value').textContent = $('volume').value + '%'; };

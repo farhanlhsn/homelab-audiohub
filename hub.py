@@ -14,10 +14,13 @@ import wave
 from pathlib import Path
 
 from aiohttp import web, ClientSession, ClientTimeout
-from core import (ActivityTracker, ConfigStore, SONY, clean_ip, loopback_ids, next_retry_delay,
-                  pick_source, should_reconnect, sink_states)
+from core import (ActivityTracker, ConfigStore, SONY, agent_reply, bluetooth_input, clean_ip, clean_mac,
+                  loopback_ids, next_retry_delay, pick_source, should_reconnect, sink_states)
 
-SOURCE_NAMES = dict(network='audio perangkat', spotify='Spotify', airplay='AirPlay')
+SOURCE_NAMES = dict(network='audio perangkat', spotify='Spotify', airplay='AirPlay', bluetooth='Bluetooth')
+A2DP_SOURCE_UUID = '0000110a-0000-1000-8000-00805f9b34fb'
+ADAPTER_ALIAS = 'Homelab Audio'
+PAIRING_SECONDS = 120
 BASE = Path(__file__).resolve().parent
 WFAS = '/opt/homelab-audiohub/vendor/wfas/bin/WiFi Audio Streaming'
 log = logging.getLogger('audiohub')
@@ -90,6 +93,49 @@ def pairable(value):
         bus.close()
 
 
+def bluetooth_devices():
+    """Phones and PCs that can stream to us over A2DP (the Sony is an output, not an input)."""
+    import dbus
+    bus = dbus.SystemBus(private=True)
+    try:
+        managed = dbus.Interface(bus.get_object('org.bluez', '/'), 'org.freedesktop.DBus.ObjectManager').GetManagedObjects()
+        devices = []
+        for interfaces in managed.values():
+            data = interfaces.get('org.bluez.Device1')
+            if not data or str(data.get('Address')).upper() == SONY:
+                continue
+            if A2DP_SOURCE_UUID in [str(uuid) for uuid in data.get('UUIDs', [])] and (data.get('Paired') or data.get('Connected')):
+                devices.append(dict(address=str(data['Address']).upper(), name=str(data.get('Alias') or data.get('Name') or data['Address'])[:60],
+                                    connected=bool(data.get('Connected')), paired=bool(data.get('Paired'))))
+        return sorted(devices, key=lambda d: (not d['connected'], d['name'].lower()))
+    finally:
+        bus.close()
+
+
+def bluetooth_forget(address):
+    address = clean_mac(address)
+    if address == SONY:
+        raise ValueError('Sony tidak dihapus dari sini.')
+    import dbus
+    bus = dbus.SystemBus(private=True)
+    try:
+        adapter = dbus.Interface(bus.get_object('org.bluez', '/org/bluez/hci0'), 'org.bluez.Adapter1')
+        adapter.RemoveDevice(dbus.ObjectPath('/org/bluez/hci0/dev_' + address.replace(':', '_')))
+    finally:
+        bus.close()
+
+
+def bluetooth_alias(name):
+    import dbus
+    bus = dbus.SystemBus(private=True)
+    try:
+        props = dbus.Interface(bus.get_object('org.bluez', '/org/bluez/hci0'), 'org.freedesktop.DBus.Properties')
+        if str(props.Get('org.bluez.Adapter1', 'Alias')) != name:
+            props.Set('org.bluez.Adapter1', 'Alias', dbus.String(name))
+    finally:
+        bus.close()
+
+
 class Discovery(asyncio.DatagramProtocol):
     def __init__(self, controller):
         self.controller = controller
@@ -123,6 +169,10 @@ class Controller:
         self.reconnect_task = None
         self.reconnect_failures = 0
         self.next_reconnect = 0
+        self.bt_input = None
+        self.bt_devices = []
+        self.pair_task = None
+        self.pair_until = 0
         self.receiver = None
         self.receiver_key = None
         self.receiver_message = 'Belum terhubung ke perangkat pengirim.'
@@ -156,6 +206,10 @@ class Controller:
     async def refresh_activity(self):
         """Note which source is playing and follow a new one when the selected source is silent."""
         states = sink_states(await command('pactl', 'list', 'short', 'sinks'))
+        sources = sink_states(await command('pactl', 'list', 'short', 'sources'))
+        self.bt_input = bluetooth_input(sources)
+        if self.bt_input:
+            states['audiohub_bluetooth'] = sources[self.bt_input]
         old = dict(self.store.data)
         source = pick_source(old['source'], states)
         if states.get('audiohub_' + source) == 'RUNNING':
@@ -172,7 +226,9 @@ class Controller:
         sink = self.cached.get('sink')
         data = self.store.data
         playing = self.activity.active(time.monotonic())
-        wanted = (data['source'], sink, self.cached.get('sink_index')) if sink and data['speaker_enabled'] and playing else None
+        origin = self.bt_input if data['source'] == 'bluetooth' else 'audiohub_' + data['source'] + '.monitor'
+        wanted = ((data['source'], origin, sink, self.cached.get('sink_index'))
+                  if origin and sink and data['speaker_enabled'] and playing else None)
         owned = loopback_ids(await command('pactl', 'list', 'short', 'modules'))
         if wanted == self.route and (self.route_module in owned if wanted else not owned):
             return
@@ -181,9 +237,8 @@ class Controller:
         self.route = None
         self.route_module = None
         if wanted:
-            source = 'audiohub_' + wanted[0] + '.monitor'
             module_id = await command('pactl', 'load-module', 'module-loopback',
-                f'source={source}', f'sink={sink}', 'latency_msec=20', 'source_dont_move=true', 'sink_dont_move=true')
+                f'source={wanted[1]}', f'sink={sink}', 'latency_msec=20', 'source_dont_move=true', 'sink_dont_move=true')
             self.route_module = int(module_id)
             self.route = wanted
             await command('pactl', 'set-sink-volume', sink, str(self.store.data['volume']) + '%')
@@ -335,6 +390,60 @@ class Controller:
                 await self.route_audio()
                 self.last_action = 'Sony tersambung.' if self.cached.get('sink') else 'Bluetooth tersambung, menunggu keluaran audio.'
 
+    async def refresh_bluetooth_inputs(self):
+        try:
+            self.bt_devices = await asyncio.to_thread(bluetooth_devices)
+        except Exception as error:
+            log.info('Daftar perangkat Bluetooth: %s', str(error)[-90:])
+
+    async def start_pairing(self):
+        if self.pair_task and not self.pair_task.done():
+            return
+        self.pair_until = time.monotonic() + PAIRING_SECONDS
+        self.pair_task = asyncio.create_task(self.pairing_window())
+        self.last_action = 'Mode pairing Bluetooth aktif selama %d detik.' % PAIRING_SECONDS
+
+    async def stop_pairing(self):
+        if self.pair_task and not self.pair_task.done():
+            self.pair_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.pair_task
+        self.last_action = 'Mode pairing Bluetooth dihentikan.'
+
+    async def pairing_window(self):
+        # A short, user-triggered window: discoverable + pairable with an auto-accepting agent.
+        # New devices are trusted so they can reconnect later without an agent.
+        process = await asyncio.create_subprocess_exec('stdbuf', '-oL', 'bluetoothctl', '--agent', 'NoInputNoOutput',
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+
+        def send(text):
+            if process.returncode is None and process.stdin and not process.stdin.is_closing():
+                process.stdin.write(text.encode() + b'\n')
+
+        async def answer_prompts():
+            async for raw in process.stdout:
+                reply = agent_reply(raw.decode(errors='replace'))
+                if reply:
+                    log.info('Pairing Bluetooth: %s', reply)
+                    send(reply)
+
+        try:
+            for line in ('default-agent', 'pairable on', 'discoverable on'):
+                send(line)
+            await asyncio.wait_for(answer_prompts(), PAIRING_SECONDS)
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            for line in ('discoverable off', 'pairable off', 'quit'):
+                send(line)
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(process.wait(), 3)
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+            self.pair_until = 0
+            await self.refresh_bluetooth_inputs()
+
     def maybe_reconnect(self):
         speaker = self.cached['speaker']
         if speaker['connected']:
@@ -371,6 +480,7 @@ class Controller:
             await self.route_audio()
             await self.sync_receiver()
         self.maybe_reconnect()
+        await self.refresh_bluetooth_inputs()
 
     async def watch_audio(self):
         # React to sink changes at once instead of waiting for the next tick, so audio that
@@ -381,7 +491,7 @@ class Controller:
                 process = await asyncio.create_subprocess_exec('pactl', 'subscribe',
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
                 async for raw in process.stdout:
-                    if b'sink' in raw:
+                    if b'sink' in raw or b'source' in raw:
                         self.audio_event.set()
             except OSError as error:
                 log.warning('pactl subscribe: %s', error)
@@ -426,11 +536,14 @@ class Controller:
         self.discovery_transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(lambda: Discovery(self), sock=sock)
         await command('pactl', 'set-default-sink', 'audiohub_network')
         await command('pw-metadata', '-n', 'settings', '0', 'clock.force-quantum', str(self.store.data['quantum']))
+        try:
+            await asyncio.to_thread(bluetooth_alias, ADAPTER_ALIAS)
+        except Exception as error:
+            log.warning('Nama adapter Bluetooth tidak diubah: %s', error)
         tasks = [asyncio.create_task(self.loop()), asyncio.create_task(self.watch_audio()),
                  asyncio.create_task(self.react_to_audio())]
         yield
-        if self.reconnect_task:
-            tasks.append(self.reconnect_task)
+        tasks += [task for task in (self.reconnect_task, self.pair_task) if task]
         for task in tasks:
             task.cancel()
         for task in tasks:
@@ -446,7 +559,10 @@ class Controller:
                     receiver=dict(running=bool(self.receiver and self.receiver.returncode is None),
                                   connected=self.receiver_connected, message=self.receiver_message),
                     route_ready=bool(self.cached.get('sink') and self.store.data['speaker_enabled']),
-                    route_active=self.route is not None, last_action=self.last_action,
+                    route_active=self.route is not None,
+                    bluetooth_in=dict(pairing=max(0, round(self.pair_until - time.monotonic())), devices=self.bt_devices,
+                                      name=ADAPTER_ALIAS, streaming=self.bt_input is not None),
+                    last_action=self.last_action,
                     error=self.last_error, token=self.token)
 
 
@@ -496,6 +612,23 @@ def make_app(controller):
         await controller.speaker_action(request.match_info['action'])
         return web.json_response(controller.status())
 
+    async def bluetooth_in(request):
+        action = request.match_info['action']
+        if action == 'pair':
+            await controller.start_pairing()
+        elif action == 'cancel':
+            await controller.stop_pairing()
+        elif action == 'forget':
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError('Alamat Bluetooth tidak valid.')
+            await asyncio.to_thread(bluetooth_forget, body.get('address'))
+            await controller.refresh_bluetooth_inputs()
+            controller.last_action = 'Perangkat Bluetooth dihapus.'
+        else:
+            raise ValueError('Aksi Bluetooth tidak dikenal.')
+        return web.json_response(controller.status())
+
     async def spotify(request):
         async with ClientSession(timeout=ClientTimeout(total=3)) as session:
             async with session.get('http://127.0.0.1:3678/status') as response:
@@ -513,6 +646,7 @@ def make_app(controller):
     app.router.add_get('/api/status', status)
     app.router.add_post('/api/settings', settings)
     app.router.add_post('/api/speaker/{action}', speaker)
+    app.router.add_post('/api/bluetooth/{action}', bluetooth_in)
     app.router.add_get('/api/spotify', spotify)
     app.router.add_static('/static/', BASE / 'static')
     return app
