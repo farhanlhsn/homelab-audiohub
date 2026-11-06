@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 SONY = '74:68:59:68:28:17'
+SOURCES = ('airplay', 'spotify', 'network')
 DEFAULTS = dict(source='network', sender_ip='', buffer_ms=80, quantum=1024,
                 volume=30, auto_reconnect=True, speaker_enabled=True,
                 network_enabled=False)
@@ -33,6 +34,45 @@ def clean_mac(value):
 
 def should_reconnect(settings, connected):
     return bool(settings['speaker_enabled'] and settings['auto_reconnect'] and not connected)
+
+
+def next_retry_delay(failures):
+    """Seconds to wait before the next Bluetooth connect attempt."""
+    return min(20 * 2 ** failures, 300)
+
+
+def sink_states(text):
+    """Map sink name to state from `pactl list short sinks`."""
+    states = {}
+    for line in text.splitlines():
+        fields = line.split('\t')
+        if len(fields) >= 5:
+            states[fields[1]] = fields[4]
+    return states
+
+
+def pick_source(current, states):
+    """Follow whichever source starts playing when the selected one is silent."""
+    if states.get('audiohub_' + current) == 'RUNNING':
+        return current
+    for source in SOURCES:
+        if states.get('audiohub_' + source) == 'RUNNING':
+            return source
+    return current
+
+
+class ActivityTracker:
+    """Keeps the speaker link up for a while after the last audio."""
+
+    def __init__(self, hold=90):
+        self.hold = hold
+        self.last_active = None
+
+    def touch(self, now):
+        self.last_active = now
+
+    def active(self, now):
+        return self.last_active is not None and now - self.last_active < self.hold
 
 
 def loopback_ids(text):

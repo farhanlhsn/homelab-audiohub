@@ -14,8 +14,10 @@ import wave
 from pathlib import Path
 
 from aiohttp import web, ClientSession, ClientTimeout
-from core import ConfigStore, SONY, clean_ip, should_reconnect, loopback_ids
+from core import (ActivityTracker, ConfigStore, SONY, clean_ip, loopback_ids, next_retry_delay,
+                  pick_source, should_reconnect, sink_states)
 
+SOURCE_NAMES = dict(network='audio perangkat', spotify='Spotify', airplay='AirPlay')
 BASE = Path(__file__).resolve().parent
 WFAS = '/opt/homelab-audiohub/vendor/wfas/bin/WiFi Audio Streaming'
 log = logging.getLogger('audiohub')
@@ -112,7 +114,15 @@ class Controller:
     def __init__(self, state):
         self.store = ConfigStore(state)
         self.token = secrets.token_urlsafe(32)
+        # lock guards settings and routing; bt_lock serialises slow Bluetooth calls
+        # so a reconnect to a sleeping speaker never blocks the dashboard.
         self.lock = asyncio.Lock()
+        self.bt_lock = asyncio.Lock()
+        self.activity = ActivityTracker()
+        self.audio_event = asyncio.Event()
+        self.reconnect_task = None
+        self.reconnect_failures = 0
+        self.next_reconnect = 0
         self.receiver = None
         self.receiver_key = None
         self.receiver_message = 'Belum terhubung ke perangkat pengirim.'
@@ -123,11 +133,10 @@ class Controller:
         self.route_module = None
         self.peers = {}
         self.discovery_transport = None
-        self.last_reconnect = 0
         self.last_error = ''
         self.last_action = 'Hub siap.'
         self.cached = dict(speaker=dict(connected=False, paired=False, name='ULT FIELD 1', address=SONY),
-                           sink=None, codec=None, audio_ready=False)
+                           sink=None, sink_index=None, codec=None, audio_ready=False)
 
     async def snapshot(self):
         try:
@@ -138,16 +147,34 @@ class Controller:
         sink = next((s for s in sinks if s.get('properties', {}).get('api.bluez5.address') == SONY
                      or ('bluez_output.' + SONY.replace(':', '_')) in s.get('name', '')), None)
         self.cached = dict(speaker=speaker, sink=sink['name'] if sink else None,
+            sink_index=sink.get('index') if sink else None,
             codec=sink.get('properties', {}).get('api.bluez5.codec') if sink else None,
             sample_spec=sink.get('sample_specification') if sink else None,
             audio_ready=sink is not None, sink_state=sink.get('state') if sink else None)
         return self.cached
 
+    async def refresh_activity(self):
+        """Note which source is playing and follow a new one when the selected source is silent."""
+        states = sink_states(await command('pactl', 'list', 'short', 'sinks'))
+        old = dict(self.store.data)
+        source = pick_source(old['source'], states)
+        if states.get('audiohub_' + source) == 'RUNNING':
+            self.activity.touch(time.monotonic())
+        if source != old['source']:
+            self.store.update({'source': source})
+            await self.apply(old)
+            self.last_action = 'Beralih otomatis ke ' + SOURCE_NAMES[source] + '.'
+
     async def route_audio(self):
+        # The loopback keeps the A2DP transport busy, so it only exists while audio
+        # plays (plus a short hold) and the Sony can idle or sleep otherwise. The sink's
+        # node index is part of the key: a recreated Bluetooth node needs a fresh loopback.
         sink = self.cached.get('sink')
-        wanted = (self.store.data['source'], sink) if sink and self.store.data['speaker_enabled'] else None
+        data = self.store.data
+        playing = self.activity.active(time.monotonic())
+        wanted = (data['source'], sink, self.cached.get('sink_index')) if sink and data['speaker_enabled'] and playing else None
         owned = loopback_ids(await command('pactl', 'list', 'short', 'modules'))
-        if wanted == self.route and (wanted is None or self.route_module in owned):
+        if wanted == self.route and (self.route_module in owned if wanted else not owned):
             return
         for module in owned:
             await command('pactl', 'unload-module', str(module), check=False)
@@ -233,79 +260,148 @@ class Controller:
         await self.route_audio()
         await self.sync_receiver()
 
+    async def pair_speaker(self):
+        previous = await asyncio.to_thread(pairable, True)
+        scanner = None
+        try:
+            # Pairable/bondable must be enabled for a persistent bond.
+            scanner = await asyncio.create_subprocess_exec('bluetoothctl', '--timeout', '25', 'scan', 'on',
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+            for _ in range(12):
+                try:
+                    info = await asyncio.to_thread(bluetooth)
+                    break
+                except Exception:
+                    await asyncio.sleep(.5)
+            else:
+                raise ValueError('Sony belum terdeteksi. Aktifkan mode pairing pada speaker, lalu coba lagi.')
+            if info.get('connected') and not info.get('bonded'):
+                await asyncio.to_thread(bluetooth, 'disconnect')
+                await asyncio.sleep(.5)
+            if not info.get('bonded'):
+                await command('bluetoothctl', '--agent', 'NoInputNoOutput', '--timeout', '20', 'pair', SONY, timeout=23, check=False)
+            info = await asyncio.to_thread(bluetooth)
+            if not info.get('bonded'):
+                raise ValueError('Pairing belum tersimpan. Pastikan Sony masih dalam mode pairing.')
+        finally:
+            if scanner and scanner.returncode is None:
+                scanner.terminate()
+                await scanner.wait()
+            await asyncio.to_thread(pairable, previous)
+
+    async def play_test_tone(self):
+        await self.snapshot()
+        if not self.cached.get('sink'):
+            raise ValueError('Sony belum siap menerima audio. Sambungkan speaker terlebih dahulu.')
+        path = self.store.path.parent / 'test.wav'
+        with wave.open(str(path), 'wb') as audio:
+            audio.setnchannels(2)
+            audio.setsampwidth(2)
+            audio.setframerate(48000)
+            frames = bytearray()
+            for i in range(48000):
+                gain = min(i / 2400, (48000 - i) / 2400, 1)
+                sample = int(32767 * 0.10 * gain * math.sin(2 * math.pi * 523.25 * i / 48000))
+                frames.extend(struct.pack('<hh', sample, sample))
+            audio.writeframes(frames)
+        await command('paplay', '--device', self.cached['sink'], str(path), timeout=6)
+
     async def speaker_action(self, action):
         if action not in ('connect', 'disconnect', 'pair', 'test'):
             raise ValueError('Aksi speaker tidak dikenal.')
-        async with self.lock:
-            if action == 'disconnect':
+        if action == 'test':
+            async with self.lock:
+                await self.play_test_tone()
+                self.last_action = 'Nada uji dikirim ke Sony.'
+        elif action == 'disconnect':
+            async with self.lock:
                 self.store.update({'speaker_enabled': False})
                 await self.route_audio()
+            async with self.bt_lock:
                 await asyncio.to_thread(bluetooth, 'disconnect')
-                self.last_action = 'Sony diputus. Reconnect otomatis ditahan sampai disambungkan kembali.'
-            elif action == 'test':
-                await self.snapshot()
-                if not self.cached.get('sink'):
-                    raise ValueError('Sony belum siap menerima audio. Sambungkan speaker terlebih dahulu.')
-                path = self.store.path.parent / 'test.wav'
-                with wave.open(str(path), 'wb') as audio:
-                    audio.setnchannels(2)
-                    audio.setsampwidth(2)
-                    audio.setframerate(48000)
-                    frames = bytearray()
-                    for i in range(48000):
-                        gain = min(i / 2400, (48000 - i) / 2400, 1)
-                        sample = int(32767 * 0.10 * gain * math.sin(2 * math.pi * 523.25 * i / 48000))
-                        frames.extend(struct.pack('<hh', sample, sample))
-                    audio.writeframes(frames)
-                await command('paplay', '--device', self.cached['sink'], str(path), timeout=6)
-                self.last_action = 'Nada uji dikirim ke Sony.'
-            else:
+            self.last_action = 'Sony diputus. Reconnect otomatis ditahan sampai disambungkan kembali.'
+        else:
+            async with self.lock:
                 self.store.update({'speaker_enabled': True})
-                self.last_reconnect = time.monotonic()
+            self.reconnect_failures = 0
+            self.next_reconnect = 0
+            async with self.bt_lock:
                 if action == 'pair':
-                    previous = await asyncio.to_thread(pairable, True)
-                    scanner = None
-                    try:
-                        # Pairable/bondable must be enabled for a persistent bond.
-                        scanner = await asyncio.create_subprocess_exec('bluetoothctl', '--timeout', '25', 'scan', 'on',
-                            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-                        for _ in range(12):
-                            try:
-                                info = await asyncio.to_thread(bluetooth)
-                                break
-                            except Exception:
-                                await asyncio.sleep(.5)
-                        else:
-                            raise ValueError('Sony belum terdeteksi. Aktifkan mode pairing pada speaker, lalu coba lagi.')
-                        if info.get('connected') and not info.get('bonded'):
-                            await asyncio.to_thread(bluetooth, 'disconnect')
-                            await asyncio.sleep(.5)
-                        if not info.get('bonded'):
-                            await command('bluetoothctl', '--agent', 'NoInputNoOutput', '--timeout', '20', 'pair', SONY, timeout=23, check=False)
-                        info = await asyncio.to_thread(bluetooth)
-                        if not info.get('bonded'):
-                            raise ValueError('Pairing belum tersimpan. Pastikan Sony masih dalam mode pairing.')
-                    finally:
-                        if scanner and scanner.returncode is None:
-                            scanner.terminate()
-                            await scanner.wait()
-                        await asyncio.to_thread(pairable, previous)
+                    await self.pair_speaker()
                 await asyncio.to_thread(bluetooth, 'connect')
-                await asyncio.sleep(1)
+            await asyncio.sleep(1)
+            async with self.lock:
                 await self.snapshot()
                 await self.route_audio()
                 self.last_action = 'Sony tersambung.' if self.cached.get('sink') else 'Bluetooth tersambung, menunggu keluaran audio.'
 
+    def maybe_reconnect(self):
+        speaker = self.cached['speaker']
+        if speaker['connected']:
+            self.reconnect_failures = 0
+            return
+        running = self.reconnect_task is not None and not self.reconnect_task.done()
+        if (running or not speaker['paired'] or not should_reconnect(self.store.data, False)
+                or time.monotonic() < self.next_reconnect):
+            return
+        self.reconnect_task = asyncio.create_task(self.reconnect())
+
+    async def reconnect(self):
+        # Runs outside self.lock: a sleeping speaker can take ~20s to time out, and bluez
+        # may already be reconnecting on its own (busy/in-progress), so failures just back off.
+        try:
+            async with self.bt_lock:
+                await asyncio.to_thread(bluetooth, 'connect')
+        except Exception as error:
+            delay = next_retry_delay(self.reconnect_failures)
+            self.reconnect_failures += 1
+            self.next_reconnect = time.monotonic() + delay
+            log.info('Sony belum tersambung (%s); mencoba lagi dalam %d detik.', str(error)[-90:], delay)
+            return
+        self.reconnect_failures = 0
+        self.next_reconnect = 0
+        async with self.lock:
+            await self.snapshot()
+            await self.route_audio()
+
     async def tick(self):
         async with self.lock:
             await self.snapshot()
-            data = self.store.data
-            if should_reconnect(data, self.cached['speaker']['connected']) and self.cached['speaker']['paired'] and time.monotonic() - self.last_reconnect > 20:
-                self.last_reconnect = time.monotonic()
-                await asyncio.to_thread(bluetooth, 'connect')
-                await self.snapshot()
+            await self.refresh_activity()
             await self.route_audio()
             await self.sync_receiver()
+        self.maybe_reconnect()
+
+    async def watch_audio(self):
+        # React to sink changes at once instead of waiting for the next tick, so audio that
+        # starts after an idle period is only clipped by a few hundred milliseconds.
+        while True:
+            process = None
+            try:
+                process = await asyncio.create_subprocess_exec('pactl', 'subscribe',
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+                async for raw in process.stdout:
+                    if b'sink' in raw:
+                        self.audio_event.set()
+            except OSError as error:
+                log.warning('pactl subscribe: %s', error)
+            finally:
+                if process and process.returncode is None:
+                    process.kill()
+                    await process.wait()
+            await asyncio.sleep(2)
+
+    async def react_to_audio(self):
+        while True:
+            await self.audio_event.wait()
+            await asyncio.sleep(.2)
+            self.audio_event.clear()
+            try:
+                async with self.lock:
+                    await self.refresh_activity()
+                    await self.route_audio()
+            except Exception as error:
+                log.warning('Audio event: %s', error)
 
     async def loop(self):
         while True:
@@ -330,11 +426,16 @@ class Controller:
         self.discovery_transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(lambda: Discovery(self), sock=sock)
         await command('pactl', 'set-default-sink', 'audiohub_network')
         await command('pw-metadata', '-n', 'settings', '0', 'clock.force-quantum', str(self.store.data['quantum']))
-        task = asyncio.create_task(self.loop())
+        tasks = [asyncio.create_task(self.loop()), asyncio.create_task(self.watch_audio()),
+                 asyncio.create_task(self.react_to_audio())]
         yield
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        if self.reconnect_task:
+            tasks.append(self.reconnect_task)
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         await self.stop_receiver()
         self.discovery_transport.close()
 
@@ -344,7 +445,8 @@ class Controller:
         return dict(settings=self.store.data, **self.cached, peers=peers,
                     receiver=dict(running=bool(self.receiver and self.receiver.returncode is None),
                                   connected=self.receiver_connected, message=self.receiver_message),
-                    route_ready=self.route is not None, last_action=self.last_action,
+                    route_ready=bool(self.cached.get('sink') and self.store.data['speaker_enabled']),
+                    route_active=self.route is not None, last_action=self.last_action,
                     error=self.last_error, token=self.token)
 
 

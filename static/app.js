@@ -29,7 +29,7 @@ function render(next) {
   $('disconnect').disabled = !connected || busy;
   $('pair').hidden = next.speaker.paired;
   $('auto').checked = next.settings.auto_reconnect;
-  $('route-status').textContent = next.route_ready ? 'Diteruskan ke Sony' : 'Menunggu speaker';
+  $('route-status').textContent = next.route_active ? 'Diteruskan ke Sony' : next.route_ready ? 'Siaga · menunggu audio' : 'Menunggu speaker';
   for (const el of document.querySelectorAll('[data-source]')) {
     const selected = el.dataset.source === next.settings.source;
     el.setAttribute('aria-selected', String(selected));

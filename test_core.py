@@ -3,7 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from core import ConfigStore, clean_ip, clean_mac, should_reconnect, loopback_ids
+from core import (ActivityTracker, ConfigStore, clean_ip, clean_mac, loopback_ids,
+                  next_retry_delay, pick_source, should_reconnect, sink_states)
 
 
 class CoreTests(unittest.TestCase):
@@ -60,6 +61,34 @@ class CoreTests(unittest.TestCase):
         self.assertFalse(should_reconnect({'speaker_enabled': False, 'auto_reconnect': True}, False))
         self.assertFalse(should_reconnect({'speaker_enabled': True, 'auto_reconnect': False}, False))
         self.assertFalse(should_reconnect({'speaker_enabled': True, 'auto_reconnect': True}, True))
+
+    def test_sink_states_use_real_pactl_short_output(self):
+        output = ('37\taudiohub_network\tPipeWire\tfloat32le 2ch 48000Hz\tIDLE\n'
+                  '41\taudiohub_airplay\tPipeWire\tfloat32le 2ch 44100Hz\tRUNNING\n'
+                  'garbage line\n')
+        self.assertEqual(sink_states(output), {'audiohub_network': 'IDLE', 'audiohub_airplay': 'RUNNING'})
+
+    def test_reconnect_backs_off_and_stops_growing(self):
+        delays = [next_retry_delay(n) for n in range(7)]
+        self.assertEqual(delays, [20, 40, 80, 160, 300, 300, 300])
+
+    def test_speaker_link_stays_up_only_briefly_after_audio_stops(self):
+        tracker = ActivityTracker(hold=90)
+        self.assertFalse(tracker.active(0))
+        tracker.touch(100)
+        self.assertTrue(tracker.active(189))
+        self.assertFalse(tracker.active(190))
+
+    def test_selected_source_wins_while_it_is_playing(self):
+        states = {'audiohub_network': 'RUNNING', 'audiohub_airplay': 'RUNNING'}
+        self.assertEqual(pick_source('network', states), 'network')
+
+    def test_playing_source_is_followed_when_selected_one_is_silent(self):
+        states = {'audiohub_network': 'IDLE', 'audiohub_airplay': 'RUNNING', 'audiohub_spotify': 'SUSPENDED'}
+        self.assertEqual(pick_source('network', states), 'airplay')
+
+    def test_selection_is_kept_when_nothing_is_playing(self):
+        self.assertEqual(pick_source('spotify', {'audiohub_airplay': 'IDLE'}), 'spotify')
 
 
 if __name__ == '__main__':
