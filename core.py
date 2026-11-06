@@ -51,10 +51,21 @@ def sink_states(text):
     return states
 
 
-def bluetooth_input(sources):
-    """Name of the connected phone/PC whose audio we receive, preferring one that is playing."""
-    names = [name for name in sources if name.startswith('bluez_input.')]
-    return next((name for name in names if sources[name] == 'RUNNING'), names[0] if names else None)
+def sink_indexes(text):
+    """Map sink name to its index from `pactl list short sinks`."""
+    indexes = {}
+    for line in text.splitlines():
+        fields = line.split('\t')
+        if len(fields) >= 2 and fields[0].isdigit():
+            indexes[fields[1]] = int(fields[0])
+    return indexes
+
+
+def bluetooth_streams_to_move(sink_inputs, target):
+    """A phone's A2DP stream arrives as a playback stream that WirePlumber autoconnects to the
+    default sink; these are the ones not yet on our dedicated Bluetooth sink."""
+    return [item['index'] for item in sink_inputs
+            if item.get('properties', {}).get('api.bluez5.profile') == 'a2dp-source' and item.get('sink') != target]
 
 
 ANSI = re.compile(r'\x1b\[[0-9;?]*[A-Za-z]|[\x01\x02\r]')
@@ -100,8 +111,7 @@ def loopback_ids(text):
     result = []
     for line in text.splitlines():
         fields = line.split('\t')
-        if (len(fields) >= 3 and fields[1] == 'module-loopback'
-                and ('source=audiohub_' in fields[2] or 'source=bluez_input.' in fields[2])):
+        if len(fields) >= 3 and fields[1] == 'module-loopback' and 'source=audiohub_' in fields[2]:
             result.append(int(fields[0]))
     return result
 

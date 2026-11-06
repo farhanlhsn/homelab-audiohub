@@ -14,8 +14,8 @@ import wave
 from pathlib import Path
 
 from aiohttp import web, ClientSession, ClientTimeout
-from core import (ActivityTracker, ConfigStore, SONY, agent_reply, bluetooth_input, clean_ip, clean_mac,
-                  loopback_ids, next_retry_delay, pick_source, should_reconnect, sink_states)
+from core import (ActivityTracker, ConfigStore, SONY, agent_reply, bluetooth_streams_to_move, clean_ip, clean_mac,
+                  loopback_ids, next_retry_delay, pick_source, should_reconnect, sink_indexes, sink_states)
 
 SOURCE_NAMES = dict(network='audio perangkat', spotify='Spotify', airplay='AirPlay', bluetooth='Bluetooth')
 A2DP_SOURCE_UUID = '0000110a-0000-1000-8000-00805f9b34fb'
@@ -106,8 +106,23 @@ def bluetooth_devices():
                 continue
             if A2DP_SOURCE_UUID in [str(uuid) for uuid in data.get('UUIDs', [])] and (data.get('Paired') or data.get('Connected')):
                 devices.append(dict(address=str(data['Address']).upper(), name=str(data.get('Alias') or data.get('Name') or data['Address'])[:60],
-                                    connected=bool(data.get('Connected')), paired=bool(data.get('Paired'))))
+                                    connected=bool(data.get('Connected')), paired=bool(data.get('Paired')),
+                                    trusted=bool(data.get('Trusted'))))
         return sorted(devices, key=lambda d: (not d['connected'], d['name'].lower()))
+    finally:
+        bus.close()
+
+
+def bluetooth_trust(address):
+    """Trusted devices are authorised for A2DP without an agent; otherwise bluez denies the audio profile."""
+    import dbus
+    address = clean_mac(address)
+    if address == SONY:
+        return
+    bus = dbus.SystemBus(private=True)
+    try:
+        props = dbus.Interface(bus.get_object('org.bluez', '/org/bluez/hci0/dev_' + address.replace(':', '_')), 'org.freedesktop.DBus.Properties')
+        props.Set('org.bluez.Device1', 'Trusted', dbus.Boolean(True))
     finally:
         bus.close()
 
@@ -169,7 +184,7 @@ class Controller:
         self.reconnect_task = None
         self.reconnect_failures = 0
         self.next_reconnect = 0
-        self.bt_input = None
+        self.bt_streaming = False
         self.bt_devices = []
         self.pair_task = None
         self.pair_until = 0
@@ -205,11 +220,21 @@ class Controller:
 
     async def refresh_activity(self):
         """Note which source is playing and follow a new one when the selected source is silent."""
-        states = sink_states(await command('pactl', 'list', 'short', 'sinks'))
-        sources = sink_states(await command('pactl', 'list', 'short', 'sources'))
-        self.bt_input = bluetooth_input(sources)
-        if self.bt_input:
-            states['audiohub_bluetooth'] = sources[self.bt_input]
+        sinks = await command('pactl', 'list', 'short', 'sinks')
+        if 'audiohub_bluetooth' not in sink_states(sinks):
+            # Loaded here rather than in the PipeWire config so it needs no engine restart.
+            await command('pactl', 'load-module', 'module-null-sink', 'sink_name=audiohub_bluetooth', 'rate=48000',
+                          'channels=2', 'sink_properties=device.description=AudioHub-Bluetooth')
+            sinks = await command('pactl', 'list', 'short', 'sinks')
+        target = sink_indexes(sinks).get('audiohub_bluetooth')
+        if target is not None:
+            moves = bluetooth_streams_to_move(json.loads(await command('pactl', '-f', 'json', 'list', 'sink-inputs')), target)
+            for index in moves:
+                await command('pactl', 'move-sink-input', str(index), 'audiohub_bluetooth', check=False)
+            if moves:
+                sinks = await command('pactl', 'list', 'short', 'sinks')
+        states = sink_states(sinks)
+        self.bt_streaming = states.get('audiohub_bluetooth') == 'RUNNING'
         old = dict(self.store.data)
         source = pick_source(old['source'], states)
         if states.get('audiohub_' + source) == 'RUNNING':
@@ -226,9 +251,8 @@ class Controller:
         sink = self.cached.get('sink')
         data = self.store.data
         playing = self.activity.active(time.monotonic())
-        origin = self.bt_input if data['source'] == 'bluetooth' else 'audiohub_' + data['source'] + '.monitor'
-        wanted = ((data['source'], origin, sink, self.cached.get('sink_index'))
-                  if origin and sink and data['speaker_enabled'] and playing else None)
+        wanted = ((data['source'], 'audiohub_' + data['source'] + '.monitor', sink, self.cached.get('sink_index'))
+                  if sink and data['speaker_enabled'] and playing else None)
         owned = loopback_ids(await command('pactl', 'list', 'short', 'modules'))
         if wanted == self.route and (self.route_module in owned if wanted else not owned):
             return
@@ -393,6 +417,10 @@ class Controller:
     async def refresh_bluetooth_inputs(self):
         try:
             self.bt_devices = await asyncio.to_thread(bluetooth_devices)
+            for device in self.bt_devices:
+                if device['paired'] and not device['trusted']:
+                    await asyncio.to_thread(bluetooth_trust, device['address'])
+                    device['trusted'] = True
         except Exception as error:
             log.info('Daftar perangkat Bluetooth: %s', str(error)[-90:])
 
@@ -423,7 +451,10 @@ class Controller:
         async def answer_prompts():
             async for raw in process.stdout:
                 reply = agent_reply(raw.decode(errors='replace'))
-                if reply:
+                if reply and reply.startswith('trust '):
+                    log.info('Pairing Bluetooth: %s', reply)
+                    await asyncio.to_thread(bluetooth_trust, reply[6:])
+                elif reply:
                     log.info('Pairing Bluetooth: %s', reply)
                     send(reply)
 
@@ -491,7 +522,7 @@ class Controller:
                 process = await asyncio.create_subprocess_exec('pactl', 'subscribe',
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
                 async for raw in process.stdout:
-                    if b'sink' in raw or b'source' in raw:
+                    if b'sink' in raw:
                         self.audio_event.set()
             except OSError as error:
                 log.warning('pactl subscribe: %s', error)
@@ -561,7 +592,7 @@ class Controller:
                     route_ready=bool(self.cached.get('sink') and self.store.data['speaker_enabled']),
                     route_active=self.route is not None,
                     bluetooth_in=dict(pairing=max(0, round(self.pair_until - time.monotonic())), devices=self.bt_devices,
-                                      name=ADAPTER_ALIAS, streaming=self.bt_input is not None),
+                                      name=ADAPTER_ALIAS, streaming=self.bt_streaming),
                     last_action=self.last_action,
                     error=self.last_error, token=self.token)
 

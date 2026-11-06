@@ -1,3 +1,4 @@
+import json
 import tempfile
 import threading
 import time
@@ -15,10 +16,10 @@ LOOPBACK = '536870919\tmodule-loopback\tsource=audiohub_network.monitor sink=blu
 class FakePactl:
     """Stands in for hub.command and records what the controller asks PipeWire to do."""
 
-    def __init__(self, sinks='', loaded=False, sources=''):
+    def __init__(self, sinks='', loaded=False, sink_inputs='[]'):
         self.calls = []
         self.sinks = sinks
-        self.sources = sources
+        self.sink_inputs = sink_inputs
         self.loaded = loaded
         self.loaded_args = None
 
@@ -28,11 +29,10 @@ class FakePactl:
             return LOOPBACK if self.loaded else ''
         if args[:4] == ('pactl', 'list', 'short', 'sinks'):
             return self.sinks
-        if args[:4] == ('pactl', 'list', 'short', 'sources'):
-            return self.sources
-        if args[:2] == ('pactl', 'load-module'):
+        if args[:5] == ('pactl', '-f', 'json', 'list', 'sink-inputs'):
+            return self.sink_inputs
+        if args[:3] == ('pactl', 'load-module', 'module-loopback'):
             self.loaded_args = args
-        if args[:2] == ('pactl', 'load-module'):
             self.loaded = True
             return '536870919'
         if args[:2] == ('pactl', 'unload-module'):
@@ -121,31 +121,61 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_pairing_window_answers_prompts_trusts_new_devices_and_closes(self):
         process = FakeBluetoothctl(['[agent] Confirm passkey 123456 (yes/no): ', '[CHG] Device AA:BB:CC:DD:EE:01 Paired: yes\r\n',
                                     '[CHG] Device 74:68:59:68:28:17 Paired: yes'])
+        trusted = []
         async def spawn(*args, **kwargs):
             return process
-        with mock.patch('hub.asyncio.create_subprocess_exec', spawn), mock.patch('hub.bluetooth_devices', lambda: []):
+        with mock.patch('hub.asyncio.create_subprocess_exec', spawn), mock.patch('hub.bluetooth_devices', lambda: []), \
+                mock.patch('hub.bluetooth_trust', trusted.append):
             await self.controller.start_pairing()
             await asyncio.sleep(.1)
             self.assertGreater(self.controller.status()['bluetooth_in']['pairing'], 100)
             await self.controller.stop_pairing()
+        # Trust goes over D-Bus: a line written to stdin can be swallowed as the answer to a pending prompt.
         self.assertEqual(process.sent, ['default-agent', 'pairable on', 'discoverable on', 'yes',
-                                        'trust AA:BB:CC:DD:EE:01', 'discoverable off', 'pairable off', 'quit'])
+                                        'discoverable off', 'pairable off', 'quit'])
+        self.assertEqual(trusted, ['AA:BB:CC:DD:EE:01'])
         self.assertEqual(self.controller.status()['bluetooth_in']['pairing'], 0)
 
-    async def test_phone_audio_is_routed_to_the_sony_only_while_it_streams(self):
-        pactl = FakePactl(sources=f'7\t{PHONE}\tPipeWire\ts16le 2ch 44100Hz\tRUNNING\n')
+    async def test_paired_phone_that_is_not_trusted_gets_trusted_so_audio_can_connect(self):
+        devices = [dict(address='AA:BB:CC:DD:EE:01', name='Mac', connected=False, paired=True, trusted=False),
+                   dict(address='AA:BB:CC:DD:EE:02', name='PC', connected=False, paired=True, trusted=True),
+                   dict(address='AA:BB:CC:DD:EE:03', name='Scan only', connected=True, paired=False, trusted=False)]
+        trusted = []
+        with mock.patch('hub.bluetooth_devices', lambda: devices), mock.patch('hub.bluetooth_trust', trusted.append):
+            await self.controller.refresh_bluetooth_inputs()
+        self.assertEqual(trusted, ['AA:BB:CC:DD:EE:01'])
+
+    async def test_phone_stream_is_moved_to_its_own_sink_and_routed_only_while_it_plays(self):
+        phone = json.dumps([{'index': 8168, 'sink': 37, 'properties': {'node.name': PHONE, 'api.bluez5.profile': 'a2dp-source'}}])
+        pactl = FakePactl(sinks='37\taudiohub_network\tPipeWire\tfloat32le 2ch 48000Hz\tIDLE\n'
+                                '45\taudiohub_bluetooth\tPipeWire\tfloat32le 2ch 48000Hz\tRUNNING\n', sink_inputs=phone)
         self.controller.cached = dict(speaker=SPEAKER, sink='bluez_output.sony', sink_index=10)
         with mock.patch('hub.command', pactl):
             await self.controller.refresh_activity()
             await self.controller.route_audio()
+            self.assertIn(('pactl', 'move-sink-input', '8168', 'audiohub_bluetooth'), pactl.calls)
             self.assertEqual(self.controller.store.data['source'], 'bluetooth')
-            self.assertIn(f'source={PHONE}', pactl.loaded_args)
-            pactl.sources = ''
+            self.assertTrue(self.controller.status()['bluetooth_in']['streaming'])
+            self.assertIn('source=audiohub_bluetooth.monitor', pactl.loaded_args)
+            pactl.sinks = pactl.sinks.replace('RUNNING', 'SUSPENDED')
+            pactl.sink_inputs = '[]'
             self.controller.activity.last_active = None
             await self.controller.refresh_activity()
             await self.controller.route_audio()
         self.assertFalse(pactl.loaded)
-        self.assertIsNone(self.controller.bt_input)
+        self.assertFalse(self.controller.status()['bluetooth_in']['streaming'])
+
+    async def test_bluetooth_sink_is_created_when_missing_and_streams_already_there_are_left_alone(self):
+        phone = json.dumps([{'index': 8168, 'sink': 45, 'properties': {'api.bluez5.profile': 'a2dp-source'}}])
+        pactl = FakePactl(sinks='45\taudiohub_bluetooth\tPipeWire\tfloat32le 2ch 48000Hz\tIDLE\n', sink_inputs=phone)
+        with mock.patch('hub.command', pactl):
+            await self.controller.refresh_activity()
+        self.assertEqual(pactl.count('move-sink-input'), 0)
+        missing = FakePactl(sinks='')
+        with mock.patch('hub.command', missing):
+            await self.controller.refresh_activity()
+        self.assertTrue(any(call[:3] == ('pactl', 'load-module', 'module-null-sink') and 'sink_name=audiohub_bluetooth' in call
+                            for call in missing.calls))
 
     async def test_unknown_operation_is_rejected(self):
         response = await self.client.post('/api/speaker/reboot', json={}, headers=self.headers())

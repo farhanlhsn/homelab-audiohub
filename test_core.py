@@ -3,8 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from core import (ActivityTracker, ConfigStore, agent_reply, bluetooth_input, clean_ip, clean_mac,
-                  loopback_ids, next_retry_delay, pick_source, should_reconnect, sink_states)
+from core import (ActivityTracker, ConfigStore, agent_reply, bluetooth_streams_to_move, clean_ip, clean_mac,
+                  loopback_ids, next_retry_delay, pick_source, should_reconnect, sink_indexes, sink_states)
 
 
 class CoreTests(unittest.TestCase):
@@ -20,15 +20,18 @@ class CoreTests(unittest.TestCase):
         self.assertIsNone(agent_reply('[CHG] Device AA:BB:CC:DD:EE:01 Paired: yes; rm -rf /'))
         self.assertIsNone(agent_reply(''))
 
-    def test_bluetooth_input_prefers_the_device_that_is_playing(self):
-        sources = {'audiohub_network.monitor': 'IDLE', 'bluez_input.AA_BB.2': 'IDLE', 'bluez_input.CC_DD.2': 'RUNNING'}
-        self.assertEqual(bluetooth_input(sources), 'bluez_input.CC_DD.2')
-        self.assertEqual(bluetooth_input({'bluez_input.AA_BB.2': 'SUSPENDED'}), 'bluez_input.AA_BB.2')
-        self.assertIsNone(bluetooth_input({'audiohub_network.monitor': 'RUNNING'}))
+    def test_phone_streams_are_moved_to_the_bluetooth_sink_once(self):
+        # Real shape: WirePlumber autoconnects the phone's A2DP stream to the default sink.
+        inputs = [{'index': 7001, 'sink': 41, 'properties': {'node.name': 'AudioHub AirPlay'}},
+                  {'index': 8168, 'sink': 37, 'properties': {'node.name': 'bluez_input.CC_08.2', 'api.bluez5.profile': 'a2dp-source'}},
+                  {'index': 8170, 'sink': 45, 'properties': {'node.name': 'bluez_input.AA_BB.2', 'api.bluez5.profile': 'a2dp-source'}},
+                  {'index': 8181, 'sink': 2806, 'properties': {'node.name': 'output.loopback-1'}}]
+        self.assertEqual(bluetooth_streams_to_move(inputs, 45), [8168])
+        self.assertEqual(bluetooth_streams_to_move([], 45), [])
 
-    def test_loopbacks_from_bluetooth_inputs_are_ours_too(self):
-        output = '9\tmodule-loopback\tsource=bluez_input.AA_BB.2 sink=bluez_output.SONY\t\n10\tmodule-loopback\tsource=other sink=x\t\n'
-        self.assertEqual(loopback_ids(output), [9])
+    def test_sink_indexes_use_real_pactl_short_output(self):
+        output = '37\taudiohub_network\tPipeWire\tfloat32le 2ch 48000Hz\tIDLE\n45\taudiohub_bluetooth\tPipeWire\tfloat32le 2ch 48000Hz\tRUNNING\n'
+        self.assertEqual(sink_indexes(output), {'audiohub_network': 37, 'audiohub_bluetooth': 45})
 
     def test_bluetooth_is_a_valid_source_and_followed_when_it_plays(self):
         with tempfile.TemporaryDirectory() as d:
