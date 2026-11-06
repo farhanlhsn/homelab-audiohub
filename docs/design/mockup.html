@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Audio rumah · Mockup peta jalur</title>
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;600;700&display=swap">
+<style>
+/* off-state track for switches: 3:1 against the ground */
+:root{
+  color-scheme:light dark;
+  --off:#7d8996;
+  --ground:#f4f6f8; --panel:#ffffff; --ink:#10161d; --muted:#53606d; --rule:#d5dce3;
+  --bt:#1a56db; --ap:#c62f21; --dl:#0d7a4b; --wf:#6a3fc4; --sp:#66717e; --idle:#2b343d;
+  --on-line:#ffffff; --term:#10161d; --term-ink:#f3f6f9; --term-muted:#a9b4bf; --term-rule:#2c3640;
+  --focus:#1a56db; --radius:14px;
+  --ease:cubic-bezier(.2,.7,.2,1);
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --ground:#0d1116; --panel:#151b22; --ink:#eaf0f6; --muted:#9aa6b3; --rule:#2a333d;
+    --bt:#7aa5ff; --ap:#ff8b7c; --dl:#4fdba4; --wf:#b39dff; --sp:#98a4b1; --idle:#252d36;
+    --on-line:#0b0f14; --term:#e9eef3; --term-ink:#10161d; --term-muted:#4a5663; --term-rule:#c3ccd5;
+    --focus:#9bbcff; --off:#6b7885;
+  }
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--ground);color:var(--ink);font:16px/1.5 "Atkinson Hyperlegible Next","Segoe UI","Helvetica Neue",Arial,sans-serif;font-variant-numeric:tabular-nums;scrollbar-color:var(--rule) transparent}
+::selection{background:var(--ink);color:var(--ground)}
+:focus-visible{outline:3px solid var(--focus);outline-offset:3px;border-radius:6px}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer}
+.wrap{max-width:1120px;margin:0 auto;padding:0 16px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+/* toolbar of the mockup itself: not part of the design */
+.mockbar{background:var(--panel);border-bottom:1px solid var(--rule);font-size:13px}
+.mockbar .wrap{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;padding-top:8px;padding-bottom:8px}
+.mockbar b{margin-right:4px}
+.mockbar button{border:1px solid var(--rule);background:transparent;border-radius:999px;padding:4px 11px;font-size:13px}
+.mockbar button[aria-pressed=true]{background:var(--ink);color:var(--ground);border-color:var(--ink)}
+
+header.top{display:flex;align-items:center;justify-content:space-between;height:56px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:18px;letter-spacing:-.01em}
+.brand svg{width:26px;height:26px;stroke:currentColor;stroke-width:2.4;stroke-linecap:round;fill:none}
+.hubstate{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+.hubstate i{width:8px;height:8px;border-radius:50%;background:var(--dl);display:block}
+
+/* sign band: the status, always on top */
+.band{position:sticky;top:0;z-index:5;margin:0 -16px;padding:14px 16px;background:var(--band,var(--idle));color:var(--on-band,#fff);transition:background .5s var(--ease)}
+.band .row{display:flex;gap:14px;align-items:center;max-width:1088px;margin:0 auto}
+.roundel{flex:none;width:44px;height:44px;border-radius:50%;display:grid;place-items:center;font-weight:700;font-size:22px;background:var(--on-band,#fff);color:var(--band,var(--idle))}
+.band .msg{min-width:0;flex:1}
+.band h1{margin:0;font-size:clamp(19px,4.6vw,24px);line-height:1.2;font-weight:700;overflow-wrap:anywhere}
+.band p{margin:2px 0 0;font-size:15px;opacity:.94;overflow-wrap:anywhere}
+.band .meta{flex:none;text-align:right;font-size:13px;line-height:1.3;opacity:.94}
+.band .meta strong{display:block;font-size:20px;font-weight:700}
+.band .mtot{display:none;font-size:14px;font-weight:600}
+@media(max-width:560px){.band .meta{display:none}.band .mtot{display:block}}
+.band .count{font-weight:700;font-size:20px}
+.bar{height:6px;border-radius:3px;background:color-mix(in srgb,var(--on-band,#fff) 28%,transparent);margin-top:8px;overflow:hidden}
+.bar i{display:block;height:100%;width:100%;background:var(--on-band,#fff);transform-origin:left;transition:transform .5s linear}
+
+main{padding-top:18px;padding-bottom:40px;display:grid;gap:28px}
+.stage{display:grid;gap:0}
+@media(min-width:900px){.stage{grid-template-columns:minmax(0,1.55fr) minmax(300px,1fr);align-items:stretch}}
+h2{margin:0 0 4px;font-size:20px;letter-spacing:-.01em;line-height:1.25;text-wrap:balance}
+
+.map{background:var(--panel);border:1px solid var(--rule);border-bottom:0;border-radius:var(--radius) var(--radius) 0 0;padding:14px 16px 0;min-width:0;display:flex;flex-direction:column}
+@media(min-width:900px){.map{border:1px solid var(--rule);border-right:0;border-radius:var(--radius) 0 0 var(--radius);padding:18px 18px 18px;justify-content:center}}
+.map svg{display:block;width:100%;height:auto;overflow:visible}
+.map text{font-family:inherit}
+.legend{display:flex;flex-wrap:wrap;gap:4px 16px;margin:0 0 14px;font-size:13px;color:var(--muted)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend svg{width:11px;height:11px}
+.line{transition:opacity .5s var(--ease),stroke-width .5s var(--ease)}
+.trunk{transition:stroke .5s var(--ease)}
+
+/* terminus: the speaker, with volume as the monumental number */
+.terminus{background:var(--term);color:var(--term-ink);border-radius:0 0 var(--radius) var(--radius);padding:20px 18px 18px}
+@media(min-width:900px){.terminus{border-radius:0 var(--radius) var(--radius) 0;padding:22px 22px 20px}}
+.terminus h2{font-size:19px;margin:0}
+.terminus .sub{margin:2px 0 0;color:var(--term-muted);font-size:14px}
+.vol{display:flex;align-items:baseline;gap:6px;margin:14px 0 2px}
+.vol output{font-size:clamp(64px,17vw,96px);font-weight:700;line-height:.95;letter-spacing:-.03em}
+.vol span{font-size:24px;font-weight:600;color:var(--term-muted)}
+.volrow{display:flex;align-items:center;gap:10px}
+.volrow input[type=range]{flex:1;accent-color:var(--term-ink);height:44px;margin:0;min-width:0}
+.step{flex:none;width:48px;height:48px;border-radius:50%;border:2px solid var(--term-rule);background:transparent;display:grid;place-items:center}
+.step svg{width:20px;height:20px;stroke:currentColor;stroke-width:2.4;stroke-linecap:round;fill:none}
+.step:hover{border-color:var(--term-ink)}
+.hops{list-style:none;margin:16px 0 0;padding:14px 0 0;border-top:1px solid var(--term-rule);display:grid;gap:7px;font-size:14px}
+.hops li{display:flex;align-items:center;gap:8px}
+.hops svg{width:11px;height:11px;flex:none}
+.hops .n{margin-left:auto;font-weight:700}
+.hops .note{color:var(--term-muted);font-size:12.5px}
+.hops .total{border-top:1px solid var(--term-rule);padding-top:8px;margin-top:2px;font-weight:700}
+.acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+.btn{border:2px solid var(--ink);background:var(--ink);color:var(--ground);border-radius:10px;padding:10px 16px;font-weight:600;min-height:44px}
+.btn:hover{filter:brightness(1.15)}
+.btn.ghost{background:transparent;color:inherit}
+.terminus .btn{border-color:var(--term-ink);background:transparent;color:var(--term-ink)}
+.terminus .btn:hover{background:var(--term-ink);color:var(--term)}
+
+/* below: how to board, and settings */
+.below{display:grid;gap:28px}
+@media(min-width:900px){.below{grid-template-columns:minmax(0,1.55fr) minmax(300px,1fr);gap:32px}}
+.board{list-style:none;margin:10px 0 0;padding:0;border-top:1px solid var(--rule)}
+.board>li{border-bottom:1px solid var(--rule)}
+.board summary,.board .closed{display:flex;align-items:center;gap:14px;padding:14px 2px;min-height:64px;list-style:none;cursor:pointer}
+.board summary::-webkit-details-marker{display:none}
+.board .closed{cursor:default}
+.badge{flex:none;width:36px;height:36px;border-radius:50%;display:grid;place-items:center;font-weight:700;font-size:17px;background:var(--c);color:var(--on-line)}
+.badge.off{background:transparent;color:var(--muted);border:2px dashed var(--muted)}
+.board .t{min-width:0;flex:1}
+.board .t strong{display:block;font-size:17px;line-height:1.25}
+.board .t span{display:block;color:var(--muted);font-size:14.5px;line-height:1.35}
+.tag{flex:none;font-size:12.5px;font-weight:700;border-radius:6px;padding:2px 8px;border:1.5px solid currentColor}
+.tag.shut{color:var(--ap)}
+.chev{flex:none;width:18px;height:18px;stroke:var(--muted);stroke-width:2.4;fill:none;stroke-linecap:round;stroke-linejoin:round;transition:transform .3s var(--ease)}
+details[open]>summary .chev{transform:rotate(90deg)}
+.how{padding:0 2px 18px 52px;max-width:62ch}
+.how ol{margin:0 0 12px;padding-left:20px;display:grid;gap:4px}
+.how p{margin:0 0 10px;color:var(--muted);font-size:14.5px}
+.field{display:flex;gap:8px;max-width:360px}
+.field input[type=text]{flex:1;min-width:0;border:2px solid var(--rule);border-radius:10px;padding:9px 12px;background:var(--panel);min-height:44px}
+
+.set{display:grid;gap:0;margin-top:10px;border-top:1px solid var(--rule)}
+.set label.row{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;padding:14px 0;border-bottom:1px solid var(--rule)}
+.set .tx strong{display:block;font-size:16px}
+.set .tx span{display:block;color:var(--muted);font-size:14px;line-height:1.35}
+.switch{flex:none;appearance:none;width:48px;height:28px;border-radius:14px;background:var(--off,#7d8996);position:relative;margin:2px 0 0;transition:background .3s var(--ease);cursor:pointer}
+.switch::after{content:"";position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;background:var(--panel);box-shadow:0 1px 2px rgba(0,0,0,.35);transition:transform .3s var(--ease)}
+.switch:checked{background:var(--ink)}
+.switch:checked::after{transform:translateX(20px)}
+details.adv{border-bottom:1px solid var(--rule)}
+details.adv summary{padding:14px 0;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:12px;list-style:none;font-weight:600;min-height:52px}
+details.adv summary::-webkit-details-marker{display:none}
+details.adv[open] .chev{transform:rotate(90deg)}
+.adv .in{padding:0 0 16px;display:grid;gap:12px;color:var(--muted);font-size:14.5px}
+.adv input[type=range]{width:100%;accent-color:var(--ink)}
+.adv select{width:100%;border:2px solid var(--rule);border-radius:10px;padding:9px 12px;background:var(--panel);min-height:44px}
+footer{color:var(--muted);font-size:12.5px;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<!--
+THESIS: Status first, as a transit line map: every way in is a coloured line with its own letter roundel, all meeting at one interchange (Homelab) and ending at one terminus (Sony). Refuses the card-grid dashboard with a settings wall.
+OWN-WORLD: KRL/MRT line diagram and station signage. White paper ground, flat saturated line colours, 45-degree funnels, letter roundels, one black terminus panel, black/white sign buttons. Closed routes stay drawn, dashed, marked "Tutup".
+STORY: In a second you know what plays, over which line, with what hop times and where each number comes from. Volume is the monumental number. How to board lives below, settings lower still.
+FIRST VIEWPORT: Sticky sign band in the active line colour; below it the map (vertical on phone, horizontal on desktop) feeding the black Sony terminus whose volume numeral and slider sit inside the first screen.
+FORM: Transit line map, assigned candidate 3 of 7 (seed bef89c0d); airport-sign raise: monumental numeral and closed routes kept visible.
+FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
+-->
+
+<div class="mockbar"><div class="wrap" role="group" aria-label="Contoh keadaan">
+  <b>Mockup · data contoh</b>
+  <button type="button" data-scene="bluetooth" aria-pressed="true">Bluetooth memutar</button>
+  <button type="button" data-scene="airplay" aria-pressed="false">AirPlay dari PC</button>
+  <button type="button" data-scene="dlna" aria-pressed="false">DLNA memutar</button>
+  <button type="button" data-scene="idle" aria-pressed="false">Diam</button>
+  <button type="button" data-scene="pairing" aria-pressed="false">Pairing aktif</button>
+</div></div>
+
+<div class="wrap">
+  <header class="top">
+    <div class="brand"><svg viewBox="0 0 30 30" aria-hidden="true"><path d="M5 12v6m5-12v18m5-14v10m5-17v24m5-15v6"/></svg>Audio rumah</div>
+    <div class="hubstate"><i></i>Homelab tersambung</div>
+  </header>
+
+  <div class="band" id="band" role="status" aria-live="polite"></div>
+
+  <main>
+    <section class="stage" aria-labelledby="peta">
+      <div class="map">
+        <h2 id="peta" class="sr">Peta jalur audio</h2>
+        <div class="legend" aria-label="Arti tanda angka">
+          <span><svg viewBox="0 0 10 10" aria-hidden="true"><circle cx="5" cy="5" r="4" fill="currentColor"/></svg>dilaporkan perangkat</span>
+          <span><svg viewBox="0 0 10 10" aria-hidden="true"><circle cx="5" cy="5" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>pengaturan hub</span>
+          <span><svg viewBox="0 0 10 10" aria-hidden="true"><circle cx="5" cy="5" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-dasharray="2.2 1.6"/></svg>ditetapkan protokol</span>
+        </div>
+        <div id="mapbox"></div>
+      </div>
+      <aside class="terminus" aria-labelledby="sony">
+        <h2 id="sony">Sony ULT Field 1</h2>
+        <p class="sub">Tersambung · A2DP SBC · baterai 80%</p>
+        <div class="vol"><output id="volnum" for="vol" aria-live="off">50</output><span>%</span></div>
+        <div class="volrow">
+          <button class="step" type="button" id="down" aria-label="Kurangi volume"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg></button>
+          <input id="vol" type="range" min="0" max="100" value="50" aria-label="Volume speaker">
+          <button class="step" type="button" id="up" aria-label="Tambah volume"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M12 5v14"/></svg></button>
+        </div>
+        <ul class="hops" id="hops"></ul>
+        <div class="acts"><button class="btn" type="button">Putar nada uji</button><button class="btn" type="button">Putuskan Sony</button></div>
+      </aside>
+    </section>
+
+    <div class="below">
+      <section aria-labelledby="naik">
+        <h2 id="naik">Sambungkan perangkat</h2>
+        <p style="margin:0;color:var(--muted);font-size:15px">Pilih cara yang paling mudah. Sumber yang baru mulai memutar langsung dipakai.</p>
+        <ul class="board" id="board"></ul>
+      </section>
+
+      <section aria-labelledby="atur">
+        <h2 id="atur">Pengaturan</h2>
+        <div class="set">
+          <label class="row"><span class="tx"><strong>Ikuti jalur yang sedang jalan</strong><span>Sumber berpindah sendiri ke yang baru mulai memutar. Matikan untuk mengunci satu sumber.</span></span><input class="switch" type="checkbox" checked role="switch"></label>
+          <label class="row"><span class="tx"><strong>Sambung ulang Sony otomatis</strong><span>Menyambung lagi bila speaker terputus.</span></span><input class="switch" type="checkbox" role="switch"></label>
+          <details class="adv"><summary>Lanjutan: buffer dan pemrosesan<svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></summary>
+            <div class="in">
+              <label>Buffer jaringan WFAS: <strong id="bufv" style="color:var(--ink)">80 ms</strong><input id="buf" type="range" min="20" max="250" step="10" value="80"></label>
+              <label>Blok pemrosesan audio<select><option>256 sampel · 5,3 ms</option><option>512 sampel · 10,7 ms</option><option selected>1024 sampel · 21,3 ms</option><option>2048 sampel · 42,7 ms</option></select></label>
+              <p style="margin:0">Blok kecil menghemat puluhan milidetik tetapi lebih mudah putus-putus.</p>
+            </div>
+          </details>
+          <details class="adv"><summary>Speaker Sony<svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></summary>
+            <div class="in"><p style="margin:0">Pairing ulang diperlukan hanya bila Sony tidak mau tersambung. Nyalakan mode pairing di speaker lebih dulu.</p><div><button class="btn ghost" type="button">Pairing ulang Sony</button></div></div>
+          </details>
+        </div>
+      </section>
+    </div>
+
+    <footer><span>Debian homelab · Sony melalui Bluetooth A2DP</span><span>Diperbarui 01.58.02 · data contoh</span></footer>
+  </main>
+</div>
+
+<script>
+const LINES=[
+  {id:'bluetooth',name:'Bluetooth',badge:'B',v:'--bt'},
+  {id:'airplay',name:'AirPlay',badge:'A',v:'--ap'},
+  {id:'dlna',name:'DLNA',badge:'D',v:'--dl'},
+  {id:'wfas',name:'WFAS',badge:'W',v:'--wf'},
+  {id:'spotify',name:'Spotify',badge:'S',v:'--sp',closed:true}
+];
+const INPUT={bluetooth:{ms:358,kind:'reported'},airplay:{ms:2000,kind:'protocol'},dlna:{ms:null},wfas:{ms:80,kind:'setting'},spotify:{ms:null}};
+const HOPS=[['Bluetooth ke Sony',140,'reported','dilaporkan Sony'],['PipeWire',21,'setting','pengaturan hub'],['Loopback',20,'setting','pengaturan hub']];
+const OUTMS=HOPS.reduce((a,h)=>a+h[1],0);
+const SCENES={
+  bluetooth:{active:'bluetooth',devices:{bluetooth:'Xiaomi 14T Pro',airplay:'PC CachyOS'},track:{title:'Lagu Contoh',artist:'Artis Contoh',album:'Album Contoh'},volume:50},
+  airplay:{active:'airplay',devices:{airplay:'PC CachyOS'},track:null,volume:50},
+  dlna:{active:'dlna',devices:{dlna:'Pemutar DLNA'},track:{title:'Episode Contoh',artist:'Podcast Contoh'},volume:35},
+  idle:{active:null,devices:{bluetooth:'Xiaomi 14T Pro'},track:null,volume:50},
+  pairing:{active:null,pairing:102,devices:{},track:null,volume:50}
+};
+let scene='bluetooth';
+const $=id=>document.getElementById(id);
+const fmt=ms=>ms==null?'tidak diketahui':ms>=1000?(ms/1000).toFixed(1).replace('.',',')+' s':ms+' ms';
+const mono=(s,n)=>s.length>n?s.slice(0,n-1)+'…':s;
+const glyph=(kind,x,y,c)=>{
+  const a=`cx="${x}" cy="${y}" r="`;
+  if(kind==='reported')return `<circle ${a}4" fill="${c}"/>`;
+  if(kind==='setting')return `<circle ${a}3.2" fill="none" stroke="${c}" stroke-width="1.8"/>`;
+  return `<circle ${a}3.2" fill="none" stroke="${c}" stroke-width="1.8" stroke-dasharray="2.2 1.6"/>`;
+};
+function mapSvg(S,vertical){
+  const act=S.active,ink='var(--ink)',muted='var(--muted)';
+  const activeLine=LINES.find(l=>l.id===act);
+  const order=LINES.filter(l=>l.id!==act).concat(activeLine?[activeLine]:[]);
+  const col=l=>`var(${l.v})`;
+  const lineW=l=>l.id===act?10:6;
+  const op=l=>l.id===act?1:(l.closed?.6:.4);
+  const dash=l=>l.closed?' stroke-dasharray="2 12"':'';
+  const stat=l=>S.devices[l.id]?mono(S.devices[l.id],vertical?11:24):(l.closed?'tutup':'menunggu');
+  const roundel=(l,x,y)=>{
+    const ring=l.id===act?`<circle cx="${x}" cy="${y}" r="20" fill="none" stroke="${ink}" stroke-width="2.5"/>`:'';
+    const fill=l.closed?'var(--panel)':col(l);
+    const edge=l.closed?` stroke="${muted}" stroke-width="2" stroke-dasharray="3 3"`:'';
+    return `${ring}<circle cx="${x}" cy="${y}" r="15" fill="${fill}"${edge}/><text x="${x}" y="${y+6}" text-anchor="middle" font-size="17" font-weight="700" fill="${l.closed?muted:'var(--on-line)'}">${l.badge}</text>`;
+  };
+  const lat=(l,x,y,anchor)=>{
+    const i=INPUT[l.id],t=i.ms==null?'—':fmt(i.ms),w=t.length*7.4;
+    if(i.ms==null)return `<text x="${x}" y="${y}" text-anchor="${anchor}" font-size="14" font-weight="600" fill="${muted}">${t}</text>`;
+    const gx=anchor==='middle'?x-w/2-8:x,tx=anchor==='middle'?x+6:x+10;
+    return `${glyph(i.kind,gx,y-5,muted)}<text x="${tx}" y="${y}" text-anchor="${anchor==='middle'?'middle':'start'}" font-size="14" font-weight="600" fill="${ink}">${t}</text>`;
+  };
+  const hub=(x,y)=>`<circle cx="${x}" cy="${y}" r="12" fill="var(--panel)" stroke="${ink}" stroke-width="4"/>`;
+  const trunkStroke=activeLine?`var(${activeLine.v})`:'var(--rule)';
+  let out='',W,H,train='';
+  if(vertical){
+    W=358;H=340;const xs=[36,107.5,179,250.5,322],hx=179,hubY=272;
+    LINES.forEach((l,i)=>{const dx=Math.abs(xs[i]-hx);l._d=`M${xs[i]},93 V${hubY-dx} L${hx},${hubY}`;});
+    order.forEach(l=>{out+=`<path class="line" d="${l._d}" fill="none" stroke="${col(l)}" stroke-width="${lineW(l)}" stroke-linecap="round" stroke-linejoin="round" opacity="${op(l)}"${dash(l)}/>`;});
+    out+=`<path class="trunk" d="M${hx},${hubY} V${H}" fill="none" stroke="${trunkStroke}" stroke-width="10"/>`;
+    LINES.forEach((l,i)=>{
+      const x=xs[i];
+      out+=`<text x="${x}" y="15" text-anchor="middle" font-size="13" font-weight="700" fill="${ink}">${l.name}</text>`;
+      out+=`<text x="${x}" y="31" text-anchor="middle" font-size="11.5" fill="${muted}">${stat(l)}</text>`;
+      out+=lat(l,x,52,'middle')+roundel(l,x,76);
+    });
+    out+=hub(hx,hubY);
+    out+=`<text x="${hx+20}" y="${hubY-4}" font-size="14" font-weight="700" fill="${ink}">Homelab</text>`;
+    out+=`<text x="${hx+20}" y="${hubY+32}" font-size="12.5" fill="${muted}">Hub → Sony</text>`;
+    out+=glyph('setting',hx+25,hubY+50,muted)+`<text x="${hx+34}" y="${hubY+55}" font-size="14" font-weight="700" fill="${ink}">${OUTMS} ms</text>`;
+    if(activeLine)train=activeLine._d+` V${H}`;
+  }else{
+    W=660;H=344;const hubX=470,ymid=172,ys=LINES.map((_,i)=>40+i*66);
+    LINES.forEach((l,i)=>{const y=ys[i],dy=Math.abs(y-ymid);l._d=`M195,${y} H${hubX-26-dy} L${hubX-26},${ymid} H${hubX}`;});
+    order.forEach(l=>{out+=`<path class="line" d="${l._d}" fill="none" stroke="${col(l)}" stroke-width="${lineW(l)}" stroke-linecap="round" stroke-linejoin="round" opacity="${op(l)}"${dash(l)}/>`;});
+    out+=`<path class="trunk" d="M${hubX},${ymid} H${W-4}" fill="none" stroke="${trunkStroke}" stroke-width="10"/>`;
+    LINES.forEach((l,i)=>{
+      const y=ys[i];
+      out+=`<text x="0" y="${y-2}" font-size="15" font-weight="700" fill="${ink}">${l.name}</text>`;
+      out+=`<text x="0" y="${y+16}" font-size="13" fill="${muted}">${stat(l)}</text>`;
+      out+=roundel(l,170,y)+lat(l,214,y-14,'start');
+    });
+    out+=hub(hubX,ymid);
+    out+=`<text x="${hubX}" y="${ymid-26}" text-anchor="middle" font-size="15" font-weight="700" fill="${ink}">Homelab</text>`;
+    out+=`<text x="565" y="${ymid-18}" text-anchor="middle" font-size="13" fill="${muted}">Hub → Sony</text>`;
+    out+=glyph('setting',565-30,ymid+31,muted)+`<text x="${565-20}" y="${ymid+36}" font-size="15" font-weight="700" fill="${ink}">${OUTMS} ms</text>`;
+    if(activeLine)train=activeLine._d+` H${W-4}`;
+  }
+  return {svg:`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${ariaMap(S)}">${out}${trainDot(act,train,vertical)}</svg>`};
+}
+function trainDot(act,path,vertical){
+  if(!act||!path||matchMedia('(prefers-reduced-motion: reduce)').matches)return '';
+  const l=LINES.find(x=>x.id===act);
+  return `<circle r="6" fill="var(--panel)" stroke="var(${l.v})" stroke-width="3"><animateMotion dur="${vertical?5:6}s" repeatCount="indefinite" path="${path}" keyPoints="0;1" keyTimes="0;1" calcMode="linear"/></circle>`;
+}
+function ariaMap(S){
+  if(!S.active)return 'Peta jalur audio: tidak ada jalur yang aktif. Semua jalur bertemu di Homelab lalu menuju Sony.';
+  const l=LINES.find(x=>x.id===S.active);
+  return `Peta jalur audio: jalur ${l.name} aktif, dari ${S.devices[l.id]||'perangkat'} melalui Homelab ke Sony.`;
+}
+function renderBand(S){
+  const b=$('band');
+  if(S.pairing){
+    b.style.setProperty('--band','var(--bt)');b.style.setProperty('--on-band','var(--on-line)');
+    const m=Math.floor(S.pairing/60),s=String(S.pairing%60).padStart(2,'0');
+    b.innerHTML=`<div class="row"><div class="roundel" aria-hidden="true">B</div><div class="msg"><h1>Mode pairing aktif · <span class="count">0${m}:${s}</span></h1><p>Di perangkat, buka Bluetooth lalu pilih “Homelab Audio”.</p><div class="bar" aria-hidden="true"><i style="transform:scaleX(${(S.pairing/120).toFixed(3)})"></i></div></div></div>`;
+    return;
+  }
+  if(!S.active){
+    b.style.setProperty('--band','var(--idle)');b.style.setProperty('--on-band','#fff');
+    b.innerHTML=`<div class="row"><div class="roundel" aria-hidden="true" style="opacity:.35">·</div><div class="msg"><h1>Tidak ada yang memutar</h1><p>Sony siaga dan bisa tidur. Mulai putar dari perangkat mana pun.</p></div></div>`;
+    return;
+  }
+  const l=LINES.find(x=>x.id===S.active);
+  b.style.setProperty('--band',`var(${l.v})`);b.style.setProperty('--on-band','var(--on-line)');
+  const dev=S.devices[l.id]||'',tr=S.track;
+  const second=tr?`${tr.title}${tr.artist?' — '+tr.artist:''}`:'Judul tidak dikirim oleh pengirim';
+  const inp=INPUT[l.id].ms,total=inp==null?null:inp+OUTMS;
+  b.innerHTML=`<div class="row"><div class="roundel" aria-hidden="true">${l.badge}</div><div class="msg"><h1>${l.name} · ${dev}</h1><p>${second}</p><p class="mtot">${total==null?'':'≈ '+fmt(total)+' player → Sony'}</p></div><div class="meta"><strong>${total==null?'—':'≈ '+fmt(total)}</strong>perkiraan player → Sony</div></div>`;
+}
+function renderMap(S){
+  const v=!matchMedia('(min-width:900px)').matches;
+  $('mapbox').innerHTML=mapSvg(S,v).svg;
+}
+function renderHops(S){
+  const dot=k=>`<svg viewBox="0 0 10 10" aria-hidden="true">${glyph(k,5,5,'currentColor').replace(/r="4"/,'r="4"')}</svg>`;
+  $('hops').innerHTML=HOPS.map(h=>`<li>${dot(h[2])}<span>${h[0]}<br><span class="note">${h[3]}</span></span><span class="n">${h[1]} ms</span></li>`).join('')+`<li class="total"><span>Hub → Sony</span><span class="n">≈ ${OUTMS} ms</span></li>`;
+}
+function renderBoard(S){
+  const how={
+    bluetooth:{d:'HP, Mac, atau PC. Tanpa aplikasi.',body:`<ol><li>Tekan <strong>Pasangkan perangkat baru</strong>.</li><li>Di perangkat, buka Bluetooth lalu pilih “Homelab Audio”.</li><li>Pilih sebagai output suara.</li></ol><p>Tidak ada jeda 2 detik seperti AirPlay, tetapi ada dua lompatan Bluetooth sehingga delay lebih besar.</p><button class="btn" type="button">Pasangkan perangkat baru</button>`},
+    airplay:{d:'Mac, iPhone, atau PC. Pause dan resume tertunda sekitar 2 detik.',body:`<ol><li>Mac: Control Center → Sound.</li><li>Pilih “Homelab Sony”.</li></ol><p>Cocok untuk musik. Untuk video, pakai Bluetooth.</p>`},
+    dlna:{d:'Aplikasi pemutar yang punya “putar di perangkat lain”.',body:`<p>VLC, BubbleUPnP, atau Jellyfin akan menampilkan “Homelab Audio”. DLNA memutar berkas atau tautan media, bukan seluruh suara perangkat.</p>`},
+    wfas:{d:'Butuh aplikasi WFAS di pengirim. Pilih bila tiga cara lain tidak cocok.',body:`<p>Jalankan WFAS dalam mode Send / Server di pengirim, lalu masukkan alamatnya. Setelah <strong>Dengarkan</strong> aktif, hub tersambung sendiri tiap pengirim menyala.</p><div class="field"><input type="text" inputmode="decimal" placeholder="192.168.8.245" aria-label="IP perangkat pengirim"><button class="btn" type="button">Dengarkan</button></div>`}
+  };
+  $('board').innerHTML=LINES.map(l=>{
+    const c=`style="--c:var(${l.v})"`;
+    if(l.closed)return `<li><div class="closed"><span class="badge off" aria-hidden="true">S</span><span class="t"><strong>Spotify Connect</strong><span>Spotify menolak akun ini. Putar Spotify lewat Bluetooth.</span></span><span class="tag shut">Tutup</span></div></li>`;
+    const h=how[l.id],open=(S.pairing&&l.id==='bluetooth')?' open':'';
+    return `<li><details${open}><summary><span class="badge" ${c} aria-hidden="true">${l.badge}</span><span class="t"><strong>${l.name}</strong><span>${h.d}</span></span><svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></summary><div class="how">${h.body}</div></details></li>`;
+  }).join('');
+}
+let S=SCENES.bluetooth;
+function render(){
+  S=SCENES[scene];
+  renderBand(S);renderMap(S);renderHops(S);renderBoard(S);
+  $('vol').value=S.volume;$('volnum').textContent=S.volume;
+  document.querySelectorAll('.mockbar button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.scene===scene)));
+}
+document.querySelectorAll('.mockbar button').forEach(b=>b.onclick=()=>{scene=b.dataset.scene;render()});
+$('vol').oninput=e=>$('volnum').textContent=e.target.value;
+$('down').onclick=()=>{const v=$('vol');v.value=Math.max(0,+v.value-5);$('volnum').textContent=v.value};
+$('up').onclick=()=>{const v=$('vol');v.value=Math.min(100,+v.value+5);$('volnum').textContent=v.value};
+$('buf').oninput=e=>$('bufv').textContent=e.target.value+' ms';
+matchMedia('(min-width:900px)').addEventListener('change',render);
+render();
+</script>
+</body>
+</html>

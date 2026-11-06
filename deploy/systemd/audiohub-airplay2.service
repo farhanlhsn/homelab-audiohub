@@ -1,0 +1,24 @@
+[Unit]
+Description=AudioHub AirPlay 2
+After=audiohub-engine.service network-online.target nqptp.service
+Requires=audiohub-engine.service
+Wants=nqptp.service
+PartOf=audiohub-engine.service
+Conflicts=audiohub-airplay.service
+[Service]
+User=audiohub
+Group=audiohub
+SupplementaryGroups=audio bluetooth
+WorkingDirectory=/opt/homelab-audiohub
+ExecStart=/opt/homelab-audiohub/vendor/ap2/bin/shairport-sync -c /opt/homelab-audiohub/shairport-ap2.conf
+Environment=HOME=/var/lib/audiohub
+Environment=XDG_RUNTIME_DIR=/run/audiohub
+Environment=PULSE_SERVER=unix:/run/audiohub/pulse/native
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+UMask=0077
+MemoryMax=1G
+TasksMax=128
+[Install]
+WantedBy=multi-user.target

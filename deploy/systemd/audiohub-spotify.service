@@ -1,0 +1,26 @@
+[Unit]
+Description=AudioHub spotify
+After=audiohub-engine.service network-online.target
+Requires=audiohub-engine.service
+PartOf=audiohub-engine.service
+[Service]
+User=audiohub
+Group=audiohub
+SupplementaryGroups=audio bluetooth
+WorkingDirectory=/opt/homelab-audiohub
+ExecStart=/opt/homelab-audiohub/vendor/go-librespot --config_dir /var/lib/audiohub/spotify
+Environment=HOME=/var/lib/audiohub
+Environment=XDG_RUNTIME_DIR=/run/audiohub
+Environment=PULSE_SERVER=unix:/run/audiohub/pulse/native
+Environment=PULSE_SINK=audiohub_spotify
+Environment=AUDIOHUB_STATE=/var/lib/audiohub/settings.json
+Environment=AUDIOHUB_BIND=192.168.8.240
+Environment=AUDIOHUB_PORT=8096
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+UMask=0077
+MemoryMax=1G
+TasksMax=128
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,18 @@
+[Unit]
+Description=AudioHub isolated PipeWire session
+After=bluetooth.service network.target
+[Service]
+User=audiohub
+Group=audiohub
+SupplementaryGroups=audio bluetooth
+RuntimeDirectory=audiohub
+RuntimeDirectoryMode=0700
+Environment=XDG_RUNTIME_DIR=/run/audiohub
+Environment=HOME=/var/lib/audiohub
+ExecStart=/usr/bin/dbus-run-session -- /opt/homelab-audiohub/engine.sh
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+UMask=0077
+[Install]
+WantedBy=multi-user.target
