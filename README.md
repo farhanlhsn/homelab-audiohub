@@ -13,7 +13,7 @@
   </tr>
 </table>
 
-> Tangkapan layar diambil dari hub yang berjalan, jadi memuat alamat IP jaringan lokal. Ganti atau pangkas bila repositori ini dibagikan ke luar.
+> Tangkapan layar diambil dari hub yang berjalan; alamat IP di dalamnya adalah alamat LAN privat.
 
 ## Isi
 
@@ -35,7 +35,7 @@
 | Jalur | Dari | Perlu aplikasi? | Judul lagu | Catatan |
 |---|---|---|---|---|
 | **Bluetooth** | HP, Mac, PC | Tidak | Bila perangkat mengirimnya (AVRCP) | Tanpa jeda 2 detik; ada dua lompatan Bluetooth. Pairing dari dashboard |
-| **AirPlay 2** | Mac, iPhone, PC | Tidak | Dari perangkat Apple; PC Linux tidak mengirim | Pause dan resume tertunda sekitar 2 detik (sifat AirPlay) |
+| **AirPlay 2** | Mac, iPhone, PC | Tidak | Dari perangkat Apple; PC Linux tidak mengirim | Dari Safari, pause dan resume instan. Dari Control Center (suara sistem), tertunda sekitar 2 detik (sifat AirPlay) |
 | **DLNA** | VLC, BubbleUPnP, Jellyfin | Aplikasi pemutar | Bila pengendali mengirim metadata | Memutar berkas atau tautan media, bukan seluruh suara perangkat |
 | **WFAS** | Pengirim WFAS | Ya (WFAS) | Tidak ada | Jalur paling akhir bila tiga lainnya tidak cocok |
 | **Spotify Connect** | Aplikasi Spotify | Tidak | - | **Tidak berfungsi** untuk akun ini (lihat [batasan](#batasan-yang-diketahui)) |
@@ -83,7 +83,7 @@ flowchart LR
 | `audiohub-dlna` | gmediarender, "Homelab Audio" | TCP 49494, SSDP 1900 |
 | `audiohub-spotify` | go-librespot (sudah tidak berguna untuk akun ini) | 127.0.0.1:3678 |
 
-> Status unit saat ini: `audiohub-airplay` aktif saat boot, sedangkan `audiohub-airplay2` dan `nqptp` hanya dijalankan manual. Untuk AirPlay 2 permanen: `sudo systemctl disable audiohub-airplay && sudo systemctl enable audiohub-airplay2 nqptp`.
+> Status unit saat ini: AirPlay 2 (`audiohub-airplay2` dan `nqptp`) aktif saat boot; `audiohub-airplay` dinonaktifkan dan menjadi cadangan (`sudo systemctl start audiohub-airplay` menggantikan AirPlay 2 untuk sementara karena `Conflicts=`). Pilihan ini diambil karena AirPlay dari Safari terasa instan saat pause. Untuk beralih permanen di mesin lain: `sudo systemctl disable audiohub-airplay && sudo systemctl enable audiohub-airplay2 nqptp`.
 
 ## Dashboard
 
@@ -223,7 +223,7 @@ Dirancang untuk **LAN rumah yang dipercaya**, tanpa login.
 ## Batasan yang diketahui
 
 - **Spotify Connect ditolak server Spotify** untuk akun ini (`failed retrieving aes key with code 1`). Penyebabnya batasan di sisi Spotify (akun yang dipaksa memakai DRM PlayPlay), bukan bug hub; go-librespot sudah versi terbaru. Gunakan Spotify lewat Bluetooth.
-- **AirPlay:** pause dan resume tertunda sekitar 2 detik. PC Linux lewat AirPlay tidak mengirim judul lagu.
+- **AirPlay:** dari Control Center (suara sistem) pause dan resume tertunda sekitar 2 detik; dari Safari instan (pengamatan pemilik, belum diukur). PC Linux lewat AirPlay tidak mengirim judul lagu.
 - **Latensi ujung ke ujung tidak terukur.** Hanya delay Bluetooth Sony yang dilaporkan perangkat; angka lain adalah pengaturan atau angka protokol.
 - **Satu adapter Bluetooth** dipakai untuk Sony dan perangkat masuk. Pemindaian terus-menerus oleh integrasi Bluetooth lain di host yang sama (misalnya Home Assistant) bisa membuat koneksi putus-putus.
 - **Satu perangkat Bluetooth** yang praktis dipakai pada satu waktu.
