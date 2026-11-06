@@ -84,6 +84,17 @@ class LatencyTests(unittest.TestCase):
                 self.assertIsNone(report['total_ms'])
                 self.assertEqual(report['output']['ms'], 181)
 
+    def test_every_line_reports_its_own_input_figure_and_where_it_comes_from(self):
+        report = latency_report('network', SETTINGS, 140.0, True, 357.5)
+        self.assertEqual({source: (line['ms'], line['kind']) for source, line in report['lines'].items()},
+                         {'bluetooth': (358, 'reported'), 'airplay': (2000, 'protocol'), 'dlna': (None, None),
+                          'network': (80, 'setting'), 'spotify': (None, None)})
+        self.assertEqual(report['input'], {'ms': 80, 'note': report['lines']['network']['note']})
+
+    def test_the_speaker_legs_parts_say_whether_they_were_reported_or_set(self):
+        parts = latency_report('network', SETTINGS, 140.0, True, None)['output']['parts']
+        self.assertEqual([part['kind'] for part in parts], ['reported', 'setting', 'setting'])
+
     def test_a_larger_quantum_lengthens_the_hub_leg(self):
         self.assertEqual(latency_report('network', {'buffer_ms': 80, 'quantum': 2048}, 140.0, True, None)['output']['ms'], 203)
 
@@ -104,9 +115,9 @@ class ConnectionTests(unittest.TestCase):
         states = {'audiohub_bluetooth': 'RUNNING', 'audiohub_airplay': 'IDLE', 'audiohub_dlna': 'IDLE', 'audiohub_network': 'IDLE'}
         devices = [dict(name='Xiaomi', connected=True), dict(name='Mac', connected=False)]
         rows = connection_list(devices, ['192.168.8.243'], '', '192.168.8.245', 'PC Kantor', states)
-        self.assertEqual(rows, [dict(name='Xiaomi', type='Bluetooth', playing=True),
-                                dict(name='192.168.8.243', type='AirPlay', playing=False),
-                                dict(name='PC Kantor', type='Wi-Fi (WFAS)', playing=False)])
+        self.assertEqual(rows, [dict(name='Xiaomi', type='Bluetooth', source='bluetooth', playing=True),
+                                dict(name='192.168.8.243', type='AirPlay', source='airplay', playing=False),
+                                dict(name='PC Kantor', type='Wi-Fi (WFAS)', source='network', playing=False)])
 
     def test_airplay_client_name_is_used_only_when_it_is_unambiguous(self):
         self.assertEqual(connection_list([], ['192.168.8.243'], "Farhan's Mac", '', '', {})[0]['name'], "Farhan's Mac")
@@ -115,7 +126,7 @@ class ConnectionTests(unittest.TestCase):
 
     def test_dlna_appears_only_while_it_plays_and_nothing_connected_gives_an_empty_list(self):
         self.assertEqual(connection_list([], [], '', '', '', {'audiohub_dlna': 'RUNNING'}),
-                         [dict(name='Pemutar DLNA', type='DLNA', playing=True)])
+                         [dict(name='Pemutar DLNA', type='DLNA', source='dlna', playing=True)])
         self.assertEqual(connection_list([], [], '', '', '', {}), [])
 
     def test_wfas_unnamed_sender_falls_back_to_its_address(self):

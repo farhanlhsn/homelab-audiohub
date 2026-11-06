@@ -105,22 +105,23 @@ def latency_report(source, settings, speaker_delay_ms, speaker_live, phone_delay
     and the true end-to-end latency (it ends in the speaker) cannot be measured from the hub."""
     quantum_ms = settings['quantum'] / SAMPLE_RATE * 1000
     known = speaker_delay_ms is not None
-    parts = [dict(name='Bluetooth ke Sony', ms=round(speaker_delay_ms) if known else None,
+    parts = [dict(name='Bluetooth ke Sony', ms=round(speaker_delay_ms) if known else None, kind='reported',
                   note='dilaporkan Sony' if speaker_live else 'terakhir dilaporkan Sony'),
-             dict(name='PipeWire', ms=round(quantum_ms), note='pengaturan hub'),
-             dict(name='Loopback', ms=LOOPBACK_MS, note='pengaturan hub')]
+             dict(name='PipeWire', ms=round(quantum_ms), kind='setting', note='pengaturan hub'),
+             dict(name='Loopback', ms=LOOPBACK_MS, kind='setting', note='pengaturan hub')]
     output = dict(ms=round(speaker_delay_ms + quantum_ms + LOOPBACK_MS) if known else None, parts=parts)
-    inputs = {
-        'network': (settings['buffer_ms'], 'buffer WFAS (pengaturan)'),
-        'airplay': (2000, 'ditetapkan pengirim, ±2 detik pada AirPlay 1; AirPlay 2 bisa berbeda'),
-        'bluetooth': (round(phone_delay_ms) if phone_delay_ms is not None else None,
-                      'dilaporkan hub ke perangkat; belum termasuk buffer pengirim'),
-        'dlna': (None, 'tidak tetap; buffer 2 detik hanya di awal pemutaran'),
-        'spotify': (None, 'tidak tersedia'),
+    bluetooth_ms = round(phone_delay_ms) if phone_delay_ms is not None else None
+    lines = {
+        'network': dict(ms=settings['buffer_ms'], kind='setting', note='buffer WFAS (pengaturan)'),
+        'airplay': dict(ms=2000, kind='protocol', note='ditetapkan pengirim, ±2 detik pada AirPlay 1; AirPlay 2 bisa berbeda'),
+        'bluetooth': dict(ms=bluetooth_ms, kind='reported' if bluetooth_ms is not None else None,
+                          note='dilaporkan hub ke perangkat; belum termasuk buffer pengirim'),
+        'dlna': dict(ms=None, kind=None, note='tidak tetap; buffer 2 detik hanya di awal pemutaran'),
+        'spotify': dict(ms=None, kind=None, note='tidak tersedia'),
     }
-    ms, note = inputs.get(source, (None, 'tidak tersedia'))
-    total = ms + output['ms'] if ms is not None and output['ms'] is not None else None
-    return dict(source=source, input=dict(ms=ms, note=note), output=output, total_ms=total)
+    chosen = lines.get(source, dict(ms=None, kind=None, note='tidak tersedia'))
+    total = chosen['ms'] + output['ms'] if chosen['ms'] is not None and output['ms'] is not None else None
+    return dict(source=source, input=dict(ms=chosen['ms'], note=chosen['note']), lines=lines, output=output, total_ms=total)
 
 
 def peer_addresses(text):
@@ -156,14 +157,14 @@ def connection_list(bt_devices, airplay_peers, airplay_name, wfas_ip, wfas_name,
     """Connected devices with their connection type. DLNA has no persistent link, so it is listed while playing."""
     def playing(source):
         return states.get('audiohub_' + source) == 'RUNNING'
-    rows = [dict(name=device['name'], type='Bluetooth', playing=playing('bluetooth'))
+    rows = [dict(name=device['name'], type='Bluetooth', source='bluetooth', playing=playing('bluetooth'))
             for device in bt_devices if device.get('connected')]
-    rows += [dict(name=airplay_name if airplay_name and len(airplay_peers) == 1 else peer, type='AirPlay', playing=playing('airplay'))
+    rows += [dict(name=airplay_name if airplay_name and len(airplay_peers) == 1 else peer, type='AirPlay', source='airplay', playing=playing('airplay'))
              for peer in airplay_peers]
     if playing('dlna'):
-        rows.append(dict(name='Pemutar DLNA', type='DLNA', playing=True))
+        rows.append(dict(name='Pemutar DLNA', type='DLNA', source='dlna', playing=True))
     if wfas_ip:
-        rows.append(dict(name=wfas_name or wfas_ip, type='Wi-Fi (WFAS)', playing=playing('network')))
+        rows.append(dict(name=wfas_name or wfas_ip, type='Wi-Fi (WFAS)', source='network', playing=playing('network')))
     return rows
 
 

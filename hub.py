@@ -19,7 +19,7 @@ from core import (ActivityTracker, ConfigStore, SONY, agent_reply, apply_airplay
                   bluez_track, clean_ip, clean_mac, clean_text, connection_list, didl_track, lan_address,
                   latency_report, loopback_ids, next_retry_delay, parse_shairport_metadata, peer_addresses,
                   pick_source, should_reconnect, sink_indexes, sink_states, sources_playing, transport_delays,
-                  transport_state, LOOPBACK_MS)
+                  transport_state, LOOPBACK_MS, SOURCES)
 
 SOURCE_NAMES = dict(network='audio perangkat', spotify='Spotify', airplay='AirPlay', bluetooth='Bluetooth', dlna='DLNA')
 # Sinks created on demand (no engine restart); the DLNA unit also creates its own before it starts.
@@ -731,6 +731,7 @@ class Controller:
                                   connected=self.receiver_connected, message=self.receiver_message),
                     route_ready=bool(self.cached.get('sink') and self.store.data['speaker_enabled']),
                     route_active=self.route is not None, now_playing=self.now_playing(),
+                    playing={source: (self.previous_states or {}).get('audiohub_' + source) == 'RUNNING' for source in SOURCES},
                     latency=latency_report(self.store.data['source'], self.store.data, self.sony_delay_ms,
                                            self.sony_delay_live, self.input_delay_ms),
                     connections=connection_list(

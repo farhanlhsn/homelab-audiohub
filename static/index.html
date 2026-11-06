@@ -3,81 +3,108 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Audio rumah · Homelab</title>
+  <link rel="icon" href="data:,">
+  <link rel="preload" href="/static/fonts/atkinson-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/static/style.css"><script src="/static/app.js" defer></script>
 </head>
 <body>
-  <header class="topbar"><a class="brand" href="/" aria-label="Audio rumah"><svg viewBox="0 0 30 30" aria-hidden="true"><path d="M5 12v6m5-12v18m5-14v10m5-17v24m5-15v6"/></svg>Audio rumah</a><span class="local"><i></i> Homelab lokal</span></header>
+<!--
+THESIS: Status first, as a transit line map: every way in is a coloured line with its own letter roundel, all meeting at one interchange (Homelab) and ending at one terminus (Sony). Refuses the card-grid dashboard with a settings wall.
+OWN-WORLD: KRL/MRT line diagram and station signage. Cool paper ground, flat saturated line colours, 45-degree funnels, letter roundels, one black terminus panel, black/white sign buttons. Closed routes stay drawn, dashed, marked "Tutup".
+STORY: In a second you know what plays, over which line, with what hop times and where each number comes from. Volume is the monumental number. How to board lives below, settings lower still.
+FIRST VIEWPORT: Sticky sign band in the active line colour; the map (vertical on phone, horizontal on desktop) feeds the black Sony terminus whose volume numeral and slider sit inside the first screen.
+FORM: Transit line map, approved mockup in /audiohub-mockup (seed bef89c0d).
+-->
+<div class="wrap">
+  <header class="top">
+    <a class="brand" href="/" aria-label="Audio rumah"><svg viewBox="0 0 30 30" aria-hidden="true"><path d="M5 12v6m5-12v18m5-14v10m5-17v24m5-15v6"/></svg>Audio rumah</a>
+    <div class="hubstate"><i id="hub-dot"></i><span id="hub-text">Memuat status…</span></div>
+  </header>
+
+  <div class="band" id="band" data-line="idle" role="status" aria-live="polite"><div class="row"><div class="roundel" aria-hidden="true">·</div><div class="msg"><h1>Memuat status…</h1></div></div></div>
+
   <main>
-    <div class="intro"><div><h1>Satu speaker, semua perangkat.</h1><p>Pilih sumber audio. Homelab meneruskannya ke Sony.</p></div><span id="overall" class="badge">Memuat status…</span></div>
-    <div id="notice" class="notice" role="status" hidden></div>
-    <div class="main-grid">
-      <section class="speaker panel" aria-labelledby="speaker-title">
-        <div class="speaker-heading"><span class="eyebrow">Keluaran audio</span><span id="battery"></span></div>
-        <svg class="speaker-art" viewBox="0 0 360 220" role="img" aria-label="Ilustrasi speaker Sony ULT Field 1">
-          <defs><pattern id="mesh" width="5" height="5" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="0.8" fill="#626d7b"/></pattern></defs>
-          <ellipse cx="180" cy="184" rx="133" ry="9" fill="#d1dde8"/>
-          <path d="M70 68C28 53 25 113 55 123" fill="none" stroke="#414c5b" stroke-width="8"/>
-          <rect x="53" y="61" width="254" height="115" rx="49" fill="#354152"/>
-          <rect x="65" y="67" width="230" height="103" rx="42" fill="#253140"/>
-          <rect x="75" y="70" width="211" height="97" rx="38" fill="url(#mesh)"/>
-          <rect x="271" y="70" width="17" height="97" rx="8" fill="#3e4c5e"/>
-          <rect x="101" y="65" width="46" height="8" rx="4" fill="#44566c"/>
-          <text x="174" y="125" fill="#ccd4dd" font-size="18" font-family="sans-serif" font-weight="700" text-anchor="middle" letter-spacing="2">SONY</text>
-          <path d="M68 159v9m225-9v9" stroke="#627184" stroke-width="3"/>
-        </svg>
-        <h2 id="speaker-title">Sony ULT Field 1</h2><p id="speaker-detail" class="muted">Memeriksa koneksi Bluetooth…</p>
-        <div class="speaker-actions"><button id="connect" class="primary">Sambungkan</button><button id="disconnect" class="secondary">Putuskan</button></div>
-        <button id="pair" class="text-button">Pairing ulang Sony</button>
-        <div class="volume-head"><label for="volume">Volume speaker</label><output id="volume-value">30%</output></div>
-        <input id="volume" type="range" min="0" max="100" value="30" aria-label="Volume speaker">
-        <div class="speaker-footer"><button id="test" class="secondary small">Putar nada uji</button><label class="toggle"><input id="auto" type="checkbox" checked> Reconnect otomatis</label></div>
+    <section class="stage" aria-labelledby="peta">
+      <div class="map">
+        <h2 id="peta" class="sr">Peta jalur audio</h2>
+        <div class="legend" aria-label="Arti tanda angka">
+          <span><svg viewBox="0 0 10 10" aria-hidden="true"><circle cx="5" cy="5" r="4" fill="currentColor"/></svg>dilaporkan perangkat</span>
+          <span><svg viewBox="0 0 10 10" aria-hidden="true"><circle cx="5" cy="5" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>pengaturan hub</span>
+          <span><svg viewBox="0 0 10 10" aria-hidden="true"><circle cx="5" cy="5" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-dasharray="2.2 1.6"/></svg>ditetapkan protokol</span>
+        </div>
+        <div id="mapbox"></div>
+        <p class="maphint">Ketuk lencana jalur untuk berpindah ke sumber itu sekarang.</p>
+      </div>
+      <aside class="terminus" aria-labelledby="sony">
+        <h2 id="sony">Sony ULT Field 1</h2>
+        <p class="sub" id="sony-detail">Memeriksa koneksi Bluetooth…</p>
+        <div class="vol"><output id="volnum" for="vol">0</output><span>%</span></div>
+        <div class="volrow">
+          <button class="step" type="button" id="down" aria-label="Kurangi volume"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg></button>
+          <input id="vol" type="range" min="0" max="100" value="0" aria-label="Volume speaker">
+          <button class="step" type="button" id="up" aria-label="Tambah volume"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M12 5v14"/></svg></button>
+        </div>
+        <ul class="hops" id="hops"></ul>
+        <div class="acts"><button class="btn" type="button" id="connect" hidden>Sambungkan</button><button class="btn" type="button" id="test">Putar nada uji</button><button class="btn" type="button" id="disconnect">Putuskan Sony</button></div>
+      </aside>
+    </section>
+
+    <div class="below">
+      <section aria-labelledby="naik">
+        <h2 id="naik">Sambungkan perangkat</h2>
+        <p class="lead">Pilih cara yang paling mudah. Sumber yang baru mulai memutar langsung dipakai.</p>
+        <ul class="board">
+          <li><details id="row-bluetooth"><summary><span class="badge b-bluetooth" aria-hidden="true">B</span><span class="t"><strong>Bluetooth</strong><span>HP, Mac, atau PC. Tanpa aplikasi.</span></span><svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></summary>
+            <div class="how">
+              <ol><li>Tekan <strong>Pasangkan perangkat baru</strong>.</li><li>Di perangkat, buka Bluetooth lalu pilih “<span id="bt-name">Homelab Audio</span>”.</li><li>Pilih sebagai output suara.</li></ol>
+              <p>Tidak ada jeda 2 detik seperti AirPlay, tetapi ada dua lompatan Bluetooth sehingga delay lebih besar.</p>
+              <div class="pairline"><button class="btn" type="button" id="bt-pair">Pasangkan perangkat baru</button><span class="state" id="bt-state"></span></div>
+              <div class="devs" id="bt-devices"></div>
+            </div></details></li>
+          <li><details id="row-airplay"><summary><span class="badge b-airplay" aria-hidden="true">A</span><span class="t"><strong>AirPlay</strong><span>Mac, iPhone, atau PC. Pause dan resume tertunda sekitar 2 detik.</span></span><svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></summary>
+            <div class="how"><ol><li>Mac: Control Center → Sound.</li><li>Pilih “Homelab Sony”.</li></ol><p>Cocok untuk musik. Untuk video, pakai Bluetooth.</p></div></details></li>
+          <li><details id="row-dlna"><summary><span class="badge b-dlna" aria-hidden="true">D</span><span class="t"><strong>DLNA</strong><span>Aplikasi pemutar yang punya “putar di perangkat lain”.</span></span><svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></summary>
+            <div class="how"><p>VLC, BubbleUPnP, atau Jellyfin akan menampilkan “Homelab Audio”. DLNA memutar berkas atau tautan media, bukan seluruh suara perangkat. YouTube dan Spotify tidak cast lewat DLNA; untuk itu pakai Bluetooth.</p></div></details></li>
+          <li><details id="row-network"><summary><span class="badge b-network" aria-hidden="true">W</span><span class="t"><strong>WFAS</strong><span>Butuh aplikasi WFAS di pengirim. Pilih bila tiga cara lain tidak cocok.</span></span><svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></summary>
+            <div class="how">
+              <p>Jalankan WFAS dalam mode <strong>Send / Server</strong> di perangkat pengirim, lalu pilih atau masukkan alamatnya. Setelah <strong>Dengarkan</strong> aktif, hub tersambung sendiri setiap pengirim itu menyala, tanpa memilih sumber lagi.</p>
+              <div class="devs" id="peers"></div>
+              <label class="lbl" for="sender-ip">IP perangkat pengirim</label>
+              <div class="field"><input id="sender-ip" type="text" inputmode="decimal" placeholder="192.168.8.249" autocomplete="off"><button class="btn" type="button" id="start-network">Dengarkan</button></div>
+              <div class="pairline"><span class="state" id="receiver-status">Belum tersambung.</span><button class="btn ghost" type="button" id="stop-network">Hentikan</button></div>
+            </div></details></li>
+          <li><div class="closed"><span class="badge off" aria-hidden="true">S</span><span class="t"><strong>Spotify Connect</strong><span>Spotify menolak akun ini. Putar Spotify lewat Bluetooth.</span></span><span class="tag shut">Tutup</span></div></li>
+        </ul>
       </section>
-      <section class="source panel" aria-labelledby="source-title">
-        <div class="section-head"><h2 id="source-title">Sumber audio</h2><span id="route-status" class="muted small-text">Menunggu speaker</span></div>
-        <div id="now" class="now" hidden><span class="eyebrow">Sedang diputar</span><strong id="now-title"></strong><span id="now-detail" class="muted"></span></div>
-        <div id="links" class="links" hidden><span class="eyebrow">Perangkat tersambung</span><div id="link-list"></div></div>
-        <div id="latency" class="links" hidden><span class="eyebrow">Perkiraan latensi</span><div id="latency-list"></div><span class="note">Hanya delay Bluetooth ke Sony yang dilaporkan perangkat. Angka lain dari pengaturan atau protokol, dan latensi ujung ke ujung tidak bisa diukur dari hub.</span></div>
-        <label class="toggle auto-source"><input id="auto-source" type="checkbox" checked> Pilih sumber otomatis <span class="muted">· yang baru mulai memutar langsung dipakai</span></label>
-        <div class="tabs" role="tablist" aria-label="Pilih sumber"><button role="tab" aria-selected="true" data-source="network">Suara perangkat</button><button role="tab" aria-selected="false" data-source="spotify">Spotify</button><button role="tab" aria-selected="false" data-source="airplay">AirPlay</button><button role="tab" aria-selected="false" data-source="bluetooth">Bluetooth</button><button role="tab" aria-selected="false" data-source="dlna">DLNA</button></div>
-        <div id="network-pane" class="source-pane">
-          <h3>Audio dari HP atau komputer</h3><p class="muted">Jalankan WFAS dalam mode <strong>Send / Server</strong> di perangkat pengirim, lalu pilih perangkatnya di sini. Setelah <strong>Dengarkan</strong> aktif, hub tersambung sendiri setiap kali pengirim itu menyala, tanpa memilih sumber lagi.</p>
-          <div id="peers" class="peers"><p class="empty">Belum ada pengirim terdeteksi. Mulai WFAS atau masukkan IP perangkat.</p></div>
-          <label class="field-label" for="sender-ip">IP perangkat pengirim</label>
-          <div class="input-row"><input id="sender-ip" type="text" inputmode="decimal" placeholder="192.168.8.249" autocomplete="off"><button id="start-network" class="primary">Dengarkan</button></div>
-          <div class="network-state"><span id="receiver-status" class="muted">Belum tersambung.</span><button id="stop-network" class="text-button">Hentikan</button></div>
-        </div>
-        <div id="spotify-pane" class="source-pane" hidden>
-          <div class="service-icon spotify-icon" aria-hidden="true">♫</div><h3>Putar langsung dari Spotify</h3><p class="muted">Di aplikasi Spotify, buka pilihan perangkat lalu pilih <strong>Homelab Sony</strong>. HP atau laptop menjadi remote, musik diputar oleh homelab.</p><p class="hint">Memerlukan Spotify Premium. Login tetap dilakukan melalui aplikasi Spotify.</p><div id="spotify-status" class="service-note">Menunggu pemutaran dari Spotify.</div>
-        </div>
-        <div id="airplay-pane" class="source-pane" hidden>
-          <div class="service-icon" aria-hidden="true">◈</div><h3>Pilih dari menu suara Mac</h3><p class="muted">Buka <strong>Control Center → Sound</strong> di MacBook, lalu pilih <strong>Homelab Sony</strong>.</p><p class="hint">AirPlay praktis untuk musik. Pause dan resume tertunda sekitar 2 detik karena sifat AirPlay; untuk video, coba Bluetooth.</p>
-        </div>
-        <div id="bluetooth-pane" class="source-pane" hidden>
-          <div class="service-icon" aria-hidden="true">◉</div><h3>Sambungkan lewat Bluetooth biasa</h3><p class="muted">Pasangkan Mac, HP, atau PC ke <strong id="bt-name">Homelab Audio</strong> seperti ke speaker Bluetooth, lalu pilih sebagai output suara. Tidak perlu aplikasi tambahan.</p>
-          <div class="pair-row"><button id="bt-pair" class="primary">Pasangkan perangkat baru</button><span id="bt-state" class="pair-state" role="status"></span></div>
-          <div id="bt-devices" class="peers"><p class="empty">Belum ada perangkat yang dipasangkan.</p></div>
-          <p class="hint">Tidak ada jeda 2 detik seperti AirPlay, tetapi audio melewati dua lompatan Bluetooth (perangkat → hub → Sony) sehingga ada tambahan delay. Sinkronisasi video bergantung pada pemutar.</p>
-        </div>
-        <div id="dlna-pane" class="source-pane" hidden>
-          <div class="service-icon" aria-hidden="true">▷</div><h3>Putar lewat Wi-Fi dengan DLNA</h3><p class="muted">Di pemutar yang mendukung DLNA atau fitur cast bawaan HP, pilih <strong>Homelab Audio</strong> sebagai perangkat pemutar. Tidak perlu memasangkan.</p>
-          <p class="hint">DLNA memutar berkas atau tautan media (musik lokal, Jellyfin, VLC), bukan seluruh suara perangkat. YouTube dan Spotify tidak cast lewat DLNA; untuk itu pakai Bluetooth.</p>
+
+      <section aria-labelledby="atur">
+        <h2 id="atur">Pengaturan</h2>
+        <div class="set">
+          <label class="row"><span class="tx"><strong>Ikuti jalur yang sedang jalan</strong><span>Sumber berpindah sendiri ke yang baru mulai memutar. Matikan untuk mengunci satu sumber.</span></span><input class="switch" id="auto-source" type="checkbox" role="switch"></label>
+          <label class="row"><span class="tx"><strong>Sambung ulang Sony otomatis</strong><span>Menyambung lagi bila speaker terputus.</span></span><input class="switch" id="auto" type="checkbox" role="switch"></label>
+          <details class="adv"><summary>Lanjutan: buffer dan pemrosesan<svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></summary>
+            <div class="in">
+              <div class="presets" role="group" aria-label="Preset buffer">
+                <button type="button" data-buffer="40" data-quantum="512"><strong>Responsif</strong><span>40 ms · jaringan lancar</span></button>
+                <button type="button" data-buffer="80" data-quantum="1024"><strong>Seimbang</strong><span>80 ms · musik dan video</span></button>
+                <button type="button" data-buffer="160" data-quantum="2048"><strong>Lebih stabil</strong><span>160 ms · Wi-Fi sibuk</span></button>
+              </div>
+              <label>Buffer jaringan WFAS: <strong id="buffer-value">80 ms</strong><input id="buffer" type="range" min="20" max="250" step="10" value="80"></label>
+              <label>Blok pemrosesan audio
+                <select id="quantum"><option value="256">256 sampel · 5,3 ms</option><option value="512">512 sampel · 10,7 ms</option><option value="1024">1024 sampel · 21,3 ms</option><option value="2048">2048 sampel · 42,7 ms</option></select></label>
+              <p>Blok kecil menghemat puluhan milidetik tetapi lebih mudah putus-putus. Buffer hanya berlaku untuk WFAS, dan mengubahnya dapat menghentikan audio WFAS sesaat.</p>
+            </div>
+          </details>
+          <details class="adv"><summary>Speaker Sony<svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></summary>
+            <div class="in"><p>Sambungkan ulang bila Sony terasa macet. Pairing ulang diperlukan hanya bila Sony tidak mau tersambung; nyalakan mode pairing di speaker lebih dulu.</p><div class="pairline"><button class="btn ghost" type="button" id="reconnect">Sambungkan ulang</button><button class="btn ghost" type="button" id="pair">Pairing ulang Sony</button></div></div>
+          </details>
         </div>
       </section>
     </div>
-    <section class="buffer panel" aria-labelledby="buffer-title">
-      <div class="section-head"><div><h2 id="buffer-title">Keseimbangan delay dan kestabilan</h2><p class="muted">Mulai dari Seimbang. Naikkan buffer jika suara terputus-putus.</p></div><span id="buffer-badge" class="badge soft">80 ms</span></div>
-      <div class="presets" role="group" aria-label="Preset buffer"><button data-buffer="40" data-quantum="512"><strong>Responsif</strong><span>40 ms · jaringan lancar</span></button><button class="selected" data-buffer="80" data-quantum="1024"><strong>Seimbang</strong><span>80 ms · musik dan video</span></button><button data-buffer="160" data-quantum="2048"><strong>Lebih stabil</strong><span>160 ms · Wi-Fi sibuk</span></button></div>
-      <div class="buffer-controls"><div><div class="volume-head"><label for="buffer">Buffer jaringan WFAS</label><output id="buffer-value">80 ms</output></div><input id="buffer" type="range" min="20" max="250" step="10" value="80"></div><div><label class="field-label" for="quantum">Blok pemrosesan audio</label><select id="quantum"><option value="256">256 sampel · 5,3 ms pada 48 kHz</option><option value="512">512 sampel · 10,7 ms pada 48 kHz</option><option value="1024" selected>1024 sampel · 21,3 ms pada 48 kHz</option><option value="2048">2048 sampel · 42,7 ms pada 48 kHz</option></select></div></div>
-      <p class="footnote">Angka ini pengaturan buffer, bukan hasil pengukuran total latensi. Bluetooth Sony menambah delay sendiri. Mengubah buffer dapat menghentikan audio WFAS sesaat.</p>
-    </section>
-    <section class="setup panel"><div class="section-head"><h2>Hubungkan perangkatmu</h2><span class="muted small-text">Satu sumber diputar pada satu waktu</span></div>
-      <details><summary>MacBook</summary><p>Unduh <a href="https://github.com/marcomorosi06/WiFiAudioStreaming-Desktop/releases" target="_blank" rel="noopener noreferrer">WFAS Desktop</a> sesuai arsitektur Mac. Pilih <strong>Send / Server → Unicast → WFAS native</strong>, lalu mulai. Izinkan perekaman layar/audio ketika macOS memintanya. Pilih Mac di daftar pengirim pada dashboard ini. Alternatif tanpa aplikasi pengirim: pilih sumber AirPlay di atas.</p></details>
-      <details><summary>CachyOS</summary><p>Unduh <a href="https://github.com/marcomorosi06/WiFiAudioStreaming-Desktop/releases" target="_blank" rel="noopener noreferrer">WFAS Linux x86_64</a>. Jalankan mode <strong>Send / Server → Unicast → WFAS native</strong>. WFAS membuat keluaran audio virtual; pilih keluaran tersebut pada pengaturan suara atau arahkan aplikasi yang ingin didengar ke sana.</p></details>
-      <details><summary>Windows</summary><p>Unduh <a href="https://github.com/marcomorosi06/WiFiAudioStreaming-Desktop/releases" target="_blank" rel="noopener noreferrer">WFAS Windows x86_64</a>. Pilih <strong>Send / Server → Unicast → WFAS native</strong>, lalu mulai. Izinkan WFAS pada Windows Firewall untuk jaringan pribadi. Pilih komputer Windows di dashboard ini.</p></details>
-      <details><summary>Android</summary><p>Pasang <a href="https://github.com/marcomorosi06/WiFiAudioStreaming-Android/releases" target="_blank" rel="noopener noreferrer">WFAS Android</a>, pilih mode pengirim dan sumber <strong>Internal audio</strong>. Izinkan capture audio yang diminta Android, mulai, lalu pilih HP pada dashboard. Capture audio aplikasi memerlukan Android 10+; aplikasi tertentu bisa memblokirnya. Audio panggilan tidak dijamin ikut tertangkap.</p></details>
-      <p class="footnote">Semua perangkat berada di LAN/Wi-Fi rumah yang sama. Gunakan port bawaan WFAS 9090. Jika memakai kontrol akses, pilih Ask dan izinkan homelab di perangkat pengirim; mode Key belum tersedia di dashboard ini.</p>
-    </section>
-    <footer><span>Debian homelab <span class="footer-dot">·</span> Sony melalui Bluetooth A2DP</span><span id="updated">Mengambil status…</span></footer>
+
+    <footer><span>Debian homelab · Sony melalui Bluetooth A2DP</span><span id="updated">Mengambil status…</span></footer>
   </main>
+</div>
+<div id="notice" class="toast" role="status" hidden></div>
 </body>
 </html>

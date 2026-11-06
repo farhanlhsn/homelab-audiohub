@@ -257,7 +257,14 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.controller.airplay_client = "Farhan's PC"
         self.controller.previous_states = {'audiohub_airplay': 'RUNNING'}
         self.assertEqual(self.controller.status()['connections'],
-                         [dict(name='Xiaomi', type='Bluetooth', playing=False), dict(name="Farhan's PC", type='AirPlay', playing=True)])
+                         [dict(name='Xiaomi', type='Bluetooth', source='bluetooth', playing=False),
+                          dict(name="Farhan's PC", type='AirPlay', source='airplay', playing=True)])
+
+    async def test_status_says_which_sources_are_playing(self):
+        self.assertEqual(set(self.controller.status()['playing'].values()), {False})
+        self.controller.previous_states = {'audiohub_airplay': 'RUNNING', 'audiohub_dlna': 'IDLE'}
+        playing = self.controller.status()['playing']
+        self.assertEqual(playing, {'bluetooth': False, 'airplay': True, 'dlna': False, 'spotify': False, 'network': False})
 
     async def test_airplay_peers_come_from_ss_and_are_shown_by_ipv4(self):
         async def fake(*args, **kwargs):
