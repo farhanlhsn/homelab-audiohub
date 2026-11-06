@@ -44,7 +44,7 @@
 - **Sumber otomatis.** Sumber yang baru mulai memutar langsung dipakai; tidak perlu memilih di dashboard. Bisa dikunci lewat saklar "Ikuti jalur yang sedang jalan".
 - **Sony dibiarkan tidur.** Jalur ke speaker hanya dibuka selama ada suara (ditambah jeda 90 detik), sehingga A2DP bebas dan Sony bisa istirahat.
 - **Perangkat tersambung dan judul lagu** ditampilkan bersama jenis koneksinya.
-- **Latensi per ruas dengan asal angkanya:** dilaporkan perangkat, pengaturan hub, atau ditetapkan protokol. Latensi ujung ke ujung tidak bisa diukur dari hub karena berakhir di speaker, dan dashboard tidak berpura-pura bisa.
+- **Latensi per ruas dengan asal angkanya:** dilaporkan perangkat, pengaturan hub, atau ditetapkan protokol. Latensi ujung ke ujung tidak bisa diukur dari hub karena berakhir di speaker, dan dashboard tidak berpura-pura bisa. Angka AirPlay ditampilkan sebagai batas atas (`≤ 2,0 s`) karena pengirim yang menentukan: dari Safari hampir instan, dari Control Center sampai sekitar 2 detik.
 - **Pairing Bluetooth dari dashboard** (jendela 120 detik, perangkat baru otomatis dipercaya) dan hapus perangkat.
 - **Reconnect Sony** tidak memblokir dashboard dan memakai backoff 20 sampai 300 detik.
 

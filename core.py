@@ -113,15 +113,19 @@ def latency_report(source, settings, speaker_delay_ms, speaker_live, phone_delay
     bluetooth_ms = round(phone_delay_ms) if phone_delay_ms is not None else None
     lines = {
         'network': dict(ms=settings['buffer_ms'], kind='setting', note='buffer WFAS (pengaturan)'),
-        'airplay': dict(ms=2000, kind='protocol', note='ditetapkan pengirim, ±2 detik pada AirPlay 1; AirPlay 2 bisa berbeda'),
+        'airplay': dict(ms=2000, kind='protocol', upper_bound=True,
+                        note='ditetapkan pengirim: instan dari Safari, ±2 detik dari Control Center; AirPlay 2 bisa berbeda'),
         'bluetooth': dict(ms=bluetooth_ms, kind='reported' if bluetooth_ms is not None else None,
                           note='dilaporkan hub ke perangkat; belum termasuk buffer pengirim'),
         'dlna': dict(ms=None, kind=None, note='tidak tetap; buffer 2 detik hanya di awal pemutaran'),
         'spotify': dict(ms=None, kind=None, note='tidak tersedia'),
     }
-    chosen = lines.get(source, dict(ms=None, kind=None, note='tidak tersedia'))
+    for line in lines.values():
+        line.setdefault('upper_bound', False)
+    chosen = lines.get(source, dict(ms=None, kind=None, note='tidak tersedia', upper_bound=False))
     total = chosen['ms'] + output['ms'] if chosen['ms'] is not None and output['ms'] is not None else None
-    return dict(source=source, input=dict(ms=chosen['ms'], note=chosen['note']), lines=lines, output=output, total_ms=total)
+    return dict(source=source, input=dict(ms=chosen['ms'], note=chosen['note'], upper_bound=chosen['upper_bound']),
+                lines=lines, output=output, total_ms=total, total_upper_bound=chosen['upper_bound'] and total is not None)
 
 
 def peer_addresses(text):

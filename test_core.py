@@ -69,6 +69,20 @@ class LatencyTests(unittest.TestCase):
         report = latency_report('airplay', SETTINGS, 140.0, True, None)
         self.assertEqual((report['input']['ms'], report['total_ms']), (2000, 2181))
         self.assertIn('pengirim', report['input']['note'])
+        self.assertIn('instan', report['input']['note'])
+
+    def test_airplay_is_an_upper_bound_because_the_sender_decides_how_much_it_buffers(self):
+        report = latency_report('airplay', SETTINGS, 140.0, True, None)
+        self.assertTrue(report['input']['upper_bound'])
+        self.assertTrue(report['total_upper_bound'])
+        self.assertTrue(report['lines']['airplay']['upper_bound'])
+
+    def test_only_airplay_is_reported_as_an_upper_bound(self):
+        report = latency_report('network', SETTINGS, 140.0, True, 357.5)
+        self.assertEqual({source: line['upper_bound'] for source, line in report['lines'].items()},
+                         {'bluetooth': False, 'airplay': True, 'dlna': False, 'network': False, 'spotify': False})
+        self.assertFalse(report['input']['upper_bound'])
+        self.assertFalse(report['total_upper_bound'])
 
     def test_bluetooth_input_is_the_delay_the_hub_reports_to_the_phone(self):
         report = latency_report('bluetooth', SETTINGS, 140.0, True, 357.5)
@@ -89,7 +103,7 @@ class LatencyTests(unittest.TestCase):
         self.assertEqual({source: (line['ms'], line['kind']) for source, line in report['lines'].items()},
                          {'bluetooth': (358, 'reported'), 'airplay': (2000, 'protocol'), 'dlna': (None, None),
                           'network': (80, 'setting'), 'spotify': (None, None)})
-        self.assertEqual(report['input'], {'ms': 80, 'note': report['lines']['network']['note']})
+        self.assertEqual(report['input'], {'ms': 80, 'note': report['lines']['network']['note'], 'upper_bound': False})
 
     def test_the_speaker_legs_parts_say_whether_they_were_reported_or_set(self):
         parts = latency_report('network', SETTINGS, 140.0, True, None)['output']['parts']

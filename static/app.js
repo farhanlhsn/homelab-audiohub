@@ -14,7 +14,7 @@ const shown = {};
 
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
 const trim = (s, n) => s.length > n ? s.slice(0, n - 1) + '…' : s;
-const fmt = ms => ms == null ? 'tidak diketahui' : ms >= 1000 ? (ms / 1000).toFixed(1).replace('.', ',') + ' s' : ms + ' ms';
+const fmt = (ms, upper) => ms == null ? 'tidak diketahui' : (upper ? '≤ ' : '') + (ms >= 1000 ? (ms / 1000).toFixed(1).replace('.', ',') + ' s' : ms + ' ms');
 const el = (tag, className, text) => {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -71,8 +71,9 @@ function bandView(next) {
   const second = track ? (track.title ? track.title + (track.artist ? ' — ' + track.artist : '') : track.artist || '')
     : active === 'network' ? 'Audio langsung dari perangkat' : 'Judul tidak dikirim oleh pengirim';
   const total = active === next.settings.source ? next.latency.total_ms : null;
+  const upper = active === next.settings.source && !!next.latency.total_upper_bound;
   return {line: active, badge: LINE[active].badge, title: LINE[active].name + (device ? ' · ' + device : ''),
-    text: second + attention, total};
+    text: second + attention, total, upper};
 }
 function renderBand(next, offline) {
   const view = offline ? {line: 'idle', badge: '!', title: 'Hub tidak terjangkau', text: 'Mencoba menyambung lagi…'} : bandView(next);
@@ -93,13 +94,13 @@ function renderBand(next, offline) {
       message.append(bar);
     }
     if (view.total !== undefined) {
-      message.append(el('p', 'mtot', view.total == null ? '' : '≈ ' + fmt(view.total) + ' player → Sony'));
+      message.append(el('p', 'mtot', view.total == null ? '' : (view.upper ? '' : '≈ ') + fmt(view.total, view.upper) + ' player → Sony'));
     }
     const row = el('div', 'row');
     row.append(roundel, message);
     if (view.total !== undefined) {
       const meta = el('div', 'meta');
-      meta.append(el('strong', '', view.total == null ? '—' : '≈ ' + fmt(view.total)), 'perkiraan player → Sony');
+      meta.append(el('strong', '', view.total == null ? '—' : (view.upper ? '' : '≈ ') + fmt(view.total, view.upper)), view.upper ? 'batas atas player → Sony' : 'perkiraan player → Sony');
       row.append(meta);
     }
     band.replaceChildren(row);
@@ -121,7 +122,7 @@ function mapInfo(next) {
     const names = next.connections.filter(c => c.source === l.id).map(c => c.name);
     const lat = next.latency.lines[l.id] || {};
     return {
-      id: l.id, active: l.id === active, ms: lat.ms ?? null, kind: lat.kind || null,
+      id: l.id, active: l.id === active, ms: lat.ms ?? null, kind: lat.kind || null, upper: !!lat.upper_bound,
       device: l.closed ? 'tutup' : names.length ? names[0] + (names.length > 1 ? ' +' + (names.length - 1) : '') : 'menunggu',
     };
   });
@@ -142,7 +143,7 @@ function mapSvg(info, outMs, vertical, motion) {
     return `<g class="stop" data-source="${i.id}" role="button" tabindex="0" aria-label="Pakai jalur ${def.name}${i.active ? ', sedang aktif' : ''}">${hit}${ring}${body}${letter}</g>`;
   };
   const latency = (i, x, y, anchor) => {
-    const text = i.ms == null ? '—' : fmt(i.ms), width = text.length * 7.4;
+    const text = i.ms == null ? '—' : fmt(i.ms, i.upper), width = text.length * 7.4;
     if (i.ms == null) return `<text x="${x}" y="${y}" text-anchor="${anchor}" font-size="14" font-weight="600" fill="${muted}">${text}</text>`;
     const gx = anchor === 'middle' ? x - width / 2 - 8 : x, tx = anchor === 'middle' ? x + 6 : x + 10;
     return `${glyph(i.kind || 'setting', gx, y - 5, muted)}<text x="${tx}" y="${y}" text-anchor="${anchor}" font-size="14" font-weight="600" fill="${ink}">${text}</text>`;
