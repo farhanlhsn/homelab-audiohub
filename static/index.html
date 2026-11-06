@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Audio rumah · Homelab</title>
+  <link rel="stylesheet" href="/static/style.css"><script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar"><a class="brand" href="/" aria-label="Audio rumah"><svg viewBox="0 0 30 30" aria-hidden="true"><path d="M5 12v6m5-12v18m5-14v10m5-17v24m5-15v6"/></svg>Audio rumah</a><span class="local"><i></i> Homelab lokal</span></header>
+  <main>
+    <div class="intro"><div><h1>Satu speaker, semua perangkat.</h1><p>Pilih sumber audio. Homelab meneruskannya ke Sony.</p></div><span id="overall" class="badge">Memuat status…</span></div>
+    <div id="notice" class="notice" role="status" hidden></div>
+    <div class="main-grid">
+      <section class="speaker panel" aria-labelledby="speaker-title">
+        <div class="speaker-heading"><span class="eyebrow">Keluaran audio</span><span id="battery"></span></div>
+        <svg class="speaker-art" viewBox="0 0 360 220" role="img" aria-label="Ilustrasi speaker Sony ULT Field 1">
+          <defs><pattern id="mesh" width="5" height="5" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="0.8" fill="#626d7b"/></pattern></defs>
+          <ellipse cx="180" cy="184" rx="133" ry="9" fill="#d1dde8"/>
+          <path d="M70 68C28 53 25 113 55 123" fill="none" stroke="#414c5b" stroke-width="8"/>
+          <rect x="53" y="61" width="254" height="115" rx="49" fill="#354152"/>
+          <rect x="65" y="67" width="230" height="103" rx="42" fill="#253140"/>
+          <rect x="75" y="70" width="211" height="97" rx="38" fill="url(#mesh)"/>
+          <rect x="271" y="70" width="17" height="97" rx="8" fill="#3e4c5e"/>
+          <rect x="101" y="65" width="46" height="8" rx="4" fill="#44566c"/>
+          <text x="174" y="125" fill="#ccd4dd" font-size="18" font-family="sans-serif" font-weight="700" text-anchor="middle" letter-spacing="2">SONY</text>
+          <path d="M68 159v9m225-9v9" stroke="#627184" stroke-width="3"/>
+        </svg>
+        <h2 id="speaker-title">Sony ULT Field 1</h2><p id="speaker-detail" class="muted">Memeriksa koneksi Bluetooth…</p>
+        <div class="speaker-actions"><button id="connect" class="primary">Sambungkan</button><button id="disconnect" class="secondary">Putuskan</button></div>
+        <button id="pair" class="text-button">Pairing ulang Sony</button>
+        <div class="volume-head"><label for="volume">Volume speaker</label><output id="volume-value">30%</output></div>
+        <input id="volume" type="range" min="0" max="100" value="30" aria-label="Volume speaker">
+        <div class="speaker-footer"><button id="test" class="secondary small">Putar nada uji</button><label class="toggle"><input id="auto" type="checkbox" checked> Reconnect otomatis</label></div>
+      </section>
+      <section class="source panel" aria-labelledby="source-title">
+        <div class="section-head"><h2 id="source-title">Sumber audio</h2><span id="route-status" class="muted small-text">Menunggu speaker</span></div>
+        <div class="tabs" role="tablist" aria-label="Pilih sumber"><button role="tab" aria-selected="true" data-source="network">Suara perangkat</button><button role="tab" aria-selected="false" data-source="spotify">Spotify</button><button role="tab" aria-selected="false" data-source="airplay">AirPlay</button></div>
+        <div id="network-pane" class="source-pane">
+          <h3>Audio dari HP atau komputer</h3><p class="muted">Jalankan WFAS dalam mode <strong>Send / Server</strong> di perangkat pengirim, lalu pilih perangkatnya di sini.</p>
+          <div id="peers" class="peers"><p class="empty">Belum ada pengirim terdeteksi. Mulai WFAS atau masukkan IP perangkat.</p></div>
+          <label class="field-label" for="sender-ip">IP perangkat pengirim</label>
+          <div class="input-row"><input id="sender-ip" type="text" inputmode="decimal" placeholder="192.168.8.249" autocomplete="off"><button id="start-network" class="primary">Dengarkan</button></div>
+          <div class="network-state"><span id="receiver-status" class="muted">Belum tersambung.</span><button id="stop-network" class="text-button">Hentikan</button></div>
+        </div>
+        <div id="spotify-pane" class="source-pane" hidden>
+          <div class="service-icon spotify-icon" aria-hidden="true">♫</div><h3>Putar langsung dari Spotify</h3><p class="muted">Di aplikasi Spotify, buka pilihan perangkat lalu pilih <strong>Homelab Sony</strong>. HP atau laptop menjadi remote, musik diputar oleh homelab.</p><p class="hint">Memerlukan Spotify Premium. Login tetap dilakukan melalui aplikasi Spotify.</p><div id="spotify-status" class="service-note">Menunggu pemutaran dari Spotify.</div>
+        </div>
+        <div id="airplay-pane" class="source-pane" hidden>
+          <div class="service-icon" aria-hidden="true">◈</div><h3>Pilih dari menu suara Mac</h3><p class="muted">Buka <strong>Control Center → Sound</strong> di MacBook, lalu pilih <strong>Homelab Sony</strong>.</p><p class="hint">AirPlay praktis untuk musik. Untuk video dengan respons lebih cepat, coba WFAS. Sinkronisasi gambar dan suara bergantung pada aplikasi pemutar.</p>
+        </div>
+      </section>
+    </div>
+    <section class="buffer panel" aria-labelledby="buffer-title">
+      <div class="section-head"><div><h2 id="buffer-title">Keseimbangan delay dan kestabilan</h2><p class="muted">Mulai dari Seimbang. Naikkan buffer jika suara terputus-putus.</p></div><span id="buffer-badge" class="badge soft">80 ms</span></div>
+      <div class="presets" role="group" aria-label="Preset buffer"><button data-buffer="40" data-quantum="512"><strong>Responsif</strong><span>40 ms · jaringan lancar</span></button><button class="selected" data-buffer="80" data-quantum="1024"><strong>Seimbang</strong><span>80 ms · musik dan video</span></button><button data-buffer="160" data-quantum="2048"><strong>Lebih stabil</strong><span>160 ms · Wi-Fi sibuk</span></button></div>
+      <div class="buffer-controls"><div><div class="volume-head"><label for="buffer">Buffer jaringan WFAS</label><output id="buffer-value">80 ms</output></div><input id="buffer" type="range" min="20" max="250" step="10" value="80"></div><div><label class="field-label" for="quantum">Blok pemrosesan audio</label><select id="quantum"><option value="256">256 sampel · 5,3 ms pada 48 kHz</option><option value="512">512 sampel · 10,7 ms pada 48 kHz</option><option value="1024" selected>1024 sampel · 21,3 ms pada 48 kHz</option><option value="2048">2048 sampel · 42,7 ms pada 48 kHz</option></select></div></div>
+      <p class="footnote">Angka ini pengaturan buffer, bukan hasil pengukuran total latensi. Bluetooth Sony menambah delay sendiri. Mengubah buffer dapat menghentikan audio WFAS sesaat.</p>
+    </section>
+    <section class="setup panel"><div class="section-head"><h2>Hubungkan perangkatmu</h2><span class="muted small-text">Satu sumber diputar pada satu waktu</span></div>
+      <details><summary>MacBook</summary><p>Unduh <a href="https://github.com/marcomorosi06/WiFiAudioStreaming-Desktop/releases" target="_blank" rel="noopener noreferrer">WFAS Desktop</a> sesuai arsitektur Mac. Pilih <strong>Send / Server → Unicast → WFAS native</strong>, lalu mulai. Izinkan perekaman layar/audio ketika macOS memintanya. Pilih Mac di daftar pengirim pada dashboard ini. Alternatif tanpa aplikasi pengirim: pilih sumber AirPlay di atas.</p></details>
+      <details><summary>CachyOS</summary><p>Unduh <a href="https://github.com/marcomorosi06/WiFiAudioStreaming-Desktop/releases" target="_blank" rel="noopener noreferrer">WFAS Linux x86_64</a>. Jalankan mode <strong>Send / Server → Unicast → WFAS native</strong>. WFAS membuat keluaran audio virtual; pilih keluaran tersebut pada pengaturan suara atau arahkan aplikasi yang ingin didengar ke sana.</p></details>
+      <details><summary>Windows</summary><p>Unduh <a href="https://github.com/marcomorosi06/WiFiAudioStreaming-Desktop/releases" target="_blank" rel="noopener noreferrer">WFAS Windows x86_64</a>. Pilih <strong>Send / Server → Unicast → WFAS native</strong>, lalu mulai. Izinkan WFAS pada Windows Firewall untuk jaringan pribadi. Pilih komputer Windows di dashboard ini.</p></details>
+      <details><summary>Android</summary><p>Pasang <a href="https://github.com/marcomorosi06/WiFiAudioStreaming-Android/releases" target="_blank" rel="noopener noreferrer">WFAS Android</a>, pilih mode pengirim dan sumber <strong>Internal audio</strong>. Izinkan capture audio yang diminta Android, mulai, lalu pilih HP pada dashboard. Capture audio aplikasi memerlukan Android 10+; aplikasi tertentu bisa memblokirnya. Audio panggilan tidak dijamin ikut tertangkap.</p></details>
+      <p class="footnote">Semua perangkat berada di LAN/Wi-Fi rumah yang sama. Gunakan port bawaan WFAS 9090. Jika memakai kontrol akses, pilih Ask dan izinkan homelab di perangkat pengirim; mode Key belum tersedia di dashboard ini.</p>
+    </section>
+    <footer><span>Debian homelab <span class="footer-dot">·</span> Sony melalui Bluetooth A2DP</span><span id="updated">Mengambil status…</span></footer>
+  </main>
+</body>
+</html>

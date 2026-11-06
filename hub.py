@@ -1,0 +1,424 @@
+"""LAN control panel for the homelab's dedicated audio session."""
+import asyncio
+import contextlib
+import hmac
+import json
+import logging
+import math
+import os
+import secrets
+import socket
+import struct
+import time
+import wave
+from pathlib import Path
+
+from aiohttp import web, ClientSession, ClientTimeout
+from core import ConfigStore, SONY, clean_ip, should_reconnect, loopback_ids
+
+BASE = Path(__file__).resolve().parent
+WFAS = '/opt/homelab-audiohub/vendor/wfas/bin/WiFi Audio Streaming'
+log = logging.getLogger('audiohub')
+
+
+async def command(*args, timeout=8, check=True):
+    process = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE,
+                                                  stderr=asyncio.subprocess.PIPE)
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+        await process.communicate()
+        raise
+    out = stdout.decode(errors='replace').strip()
+    if check and process.returncode:
+        raise RuntimeError((stderr.decode(errors='replace') or out or 'Perintah gagal.')[-600:])
+    return out
+
+
+async def sender_available(ip, port=9090):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setblocking(False)
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.sock_sendto(sock, b'MODE_PROBE', (ip, port))
+        data, remote = await asyncio.wait_for(loop.sock_recvfrom(sock, 128), 1.2)
+        return remote[0] == ip and data.strip() == b'UNICAST'
+    except (asyncio.TimeoutError, OSError):
+        return False
+    finally:
+        sock.close()
+
+
+def bluetooth(action='status'):
+    # Close every private bus connection; the existing root bus is already full.
+    import dbus
+    bus = dbus.SystemBus(private=True)
+    try:
+        path = '/org/bluez/hci0/dev_' + SONY.replace(':', '_')
+        device = bus.get_object('org.bluez', path)
+        props = dbus.Interface(device, 'org.freedesktop.DBus.Properties')
+        if action == 'connect':
+            props.Set('org.bluez.Device1', 'Trusted', dbus.Boolean(True))
+            dbus.Interface(device, 'org.bluez.Device1').Connect(timeout=18)
+        elif action == 'disconnect':
+            dbus.Interface(device, 'org.bluez.Device1').Disconnect(timeout=10)
+        data = props.GetAll('org.bluez.Device1')
+        result = {'connected': bool(data.get('Connected')), 'paired': bool(data.get('Paired')), 'bonded': bool(data.get('Bonded')),
+                  'trusted': bool(data.get('Trusted')), 'address': SONY, 'name': str(data.get('Name', 'ULT FIELD 1'))}
+        managed = dbus.Interface(bus.get_object('org.bluez', '/'), 'org.freedesktop.DBus.ObjectManager').GetManagedObjects()
+        for obj_path, interfaces in managed.items():
+            if str(obj_path) == path and 'org.bluez.Battery1' in interfaces:
+                result['battery'] = int(interfaces['org.bluez.Battery1']['Percentage'])
+        return result
+    finally:
+        bus.close()
+
+
+def pairable(value):
+    import dbus
+    bus = dbus.SystemBus(private=True)
+    try:
+        props = dbus.Interface(bus.get_object('org.bluez', '/org/bluez/hci0'), 'org.freedesktop.DBus.Properties')
+        previous = bool(props.Get('org.bluez.Adapter1', 'Pairable'))
+        props.Set('org.bluez.Adapter1', 'Pairable', dbus.Boolean(value))
+        return previous
+    finally:
+        bus.close()
+
+
+class Discovery(asyncio.DatagramProtocol):
+    def __init__(self, controller):
+        self.controller = controller
+
+    def datagram_received(self, data, addr):
+        try:
+            ip = clean_ip(addr[0])
+            parts = data[:2048].decode('utf-8').strip().split(';')
+            if len(parts) < 4 or parts[0] != 'WIFI_AUDIO_STREAMER_DISCOVERY':
+                return
+            port = int(parts[3])
+            if not 1024 <= port <= 65535:
+                return
+            self.controller.peers[ip] = dict(ip=ip, name=parts[1][:80], port=port,
+                multicast=parts[2].upper() == 'MULTICAST', last_seen=time.time(),
+                secured=any(p in ('auth=KEY', 'auth=ASK') for p in parts))
+        except (ValueError, UnicodeError):
+            pass
+
+
+class Controller:
+    def __init__(self, state):
+        self.store = ConfigStore(state)
+        self.token = secrets.token_urlsafe(32)
+        self.lock = asyncio.Lock()
+        self.receiver = None
+        self.receiver_key = None
+        self.receiver_message = 'Belum terhubung ke perangkat pengirim.'
+        self.receiver_connected = False
+        self.reader = None
+        self.last_receiver_attempt = 0
+        self.route = None
+        self.route_module = None
+        self.peers = {}
+        self.discovery_transport = None
+        self.last_reconnect = 0
+        self.last_error = ''
+        self.last_action = 'Hub siap.'
+        self.cached = dict(speaker=dict(connected=False, paired=False, name='ULT FIELD 1', address=SONY),
+                           sink=None, codec=None, audio_ready=False)
+
+    async def snapshot(self):
+        try:
+            speaker = await asyncio.to_thread(bluetooth)
+        except Exception:
+            speaker = dict(connected=False, paired=False, trusted=False, name='ULT FIELD 1', address=SONY)
+        sinks = json.loads(await command('pactl', '-f', 'json', 'list', 'sinks'))
+        sink = next((s for s in sinks if s.get('properties', {}).get('api.bluez5.address') == SONY
+                     or ('bluez_output.' + SONY.replace(':', '_')) in s.get('name', '')), None)
+        self.cached = dict(speaker=speaker, sink=sink['name'] if sink else None,
+            codec=sink.get('properties', {}).get('api.bluez5.codec') if sink else None,
+            sample_spec=sink.get('sample_specification') if sink else None,
+            audio_ready=sink is not None, sink_state=sink.get('state') if sink else None)
+        return self.cached
+
+    async def route_audio(self):
+        sink = self.cached.get('sink')
+        wanted = (self.store.data['source'], sink) if sink and self.store.data['speaker_enabled'] else None
+        owned = loopback_ids(await command('pactl', 'list', 'short', 'modules'))
+        if wanted == self.route and (wanted is None or self.route_module in owned):
+            return
+        for module in owned:
+            await command('pactl', 'unload-module', str(module), check=False)
+        self.route = None
+        self.route_module = None
+        if wanted:
+            source = 'audiohub_' + wanted[0] + '.monitor'
+            module_id = await command('pactl', 'load-module', 'module-loopback',
+                f'source={source}', f'sink={sink}', 'latency_msec=20', 'source_dont_move=true', 'sink_dont_move=true')
+            self.route_module = int(module_id)
+            self.route = wanted
+            await command('pactl', 'set-sink-volume', sink, str(self.store.data['volume']) + '%')
+
+    async def stop_receiver(self):
+        if self.receiver and self.receiver.returncode is None:
+            self.receiver.terminate()
+            try:
+                await asyncio.wait_for(self.receiver.wait(), 4)
+            except asyncio.TimeoutError:
+                self.receiver.kill()
+                await self.receiver.wait()
+        if self.reader:
+            self.reader.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.reader
+        self.receiver = None
+        self.receiver_key = None
+        self.receiver_connected = False
+
+    async def read_receiver(self, process):
+        async for raw in process.stdout:
+            line = raw.decode(errors='replace').strip()
+            log.info('WFAS %s', line[:350])
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            name = event.get('event', '')
+            message = str(event.get('message', ''))
+            if name == 'client_connecting':
+                self.receiver_message = 'Menghubungkan ke ' + str(event.get('server', 'perangkat'))
+            elif 'disconnect' in name or 'error' in name or 'timeout' in name or 'incompatible' in name:
+                self.receiver_connected = False
+                self.receiver_message = message or 'Periksa aplikasi pengirim dan firewall perangkat.'
+            elif 'connected' in name:
+                self.receiver_connected = True
+                self.receiver_message = message or 'Audio perangkat tersambung.'
+        self.receiver_connected = False
+
+    async def sync_receiver(self):
+        data = self.store.data
+        wanted = (data['sender_ip'], data['buffer_ms']) if data['network_enabled'] and data['sender_ip'] and data['source'] == 'network' else None
+        if not wanted:
+            if self.receiver:
+                await self.stop_receiver()
+            return
+        if self.receiver_key == wanted and self.receiver and self.receiver.returncode is None:
+            return
+        if time.monotonic() - self.last_receiver_attempt < 10:
+            return
+        await self.stop_receiver()
+        self.last_receiver_attempt = time.monotonic()
+        if not await sender_available(wanted[0]):
+            self.receiver_message = 'Menunggu WFAS. Jalankan Send / Server dalam mode Unicast dan izinkan firewall jaringan pribadi.'
+            return
+        self.receiver_message = 'Mencari aplikasi pengirim di ' + wanted[0]
+        env = {**os.environ, 'PULSE_SINK': 'audiohub_network', 'JAVA_TOOL_OPTIONS': '-Xmx256m -Djava.awt.headless=true'}
+        self.receiver = await asyncio.create_subprocess_exec(WFAS, '--client', '--connect', wanted[0],
+            '--latency', str(wanted[1]), '--output', 'default', '--json',
+            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT, env=env, limit=65536)
+        self.receiver_key = wanted
+        self.reader = asyncio.create_task(self.read_receiver(self.receiver))
+
+    async def apply(self, old):
+        data = self.store.data
+        await command('pw-metadata', '-n', 'settings', '0', 'clock.force-quantum', str(data['quantum']))
+        if self.cached.get('sink'):
+            await command('pactl', 'set-sink-volume', self.cached['sink'], str(data['volume']) + '%')
+        if any(old.get(k) != data[k] for k in ('sender_ip', 'buffer_ms', 'network_enabled', 'source')):
+            await self.stop_receiver()
+            self.last_receiver_attempt = 0
+        await self.route_audio()
+        await self.sync_receiver()
+
+    async def speaker_action(self, action):
+        if action not in ('connect', 'disconnect', 'pair', 'test'):
+            raise ValueError('Aksi speaker tidak dikenal.')
+        async with self.lock:
+            if action == 'disconnect':
+                self.store.update({'speaker_enabled': False})
+                await self.route_audio()
+                await asyncio.to_thread(bluetooth, 'disconnect')
+                self.last_action = 'Sony diputus. Reconnect otomatis ditahan sampai disambungkan kembali.'
+            elif action == 'test':
+                await self.snapshot()
+                if not self.cached.get('sink'):
+                    raise ValueError('Sony belum siap menerima audio. Sambungkan speaker terlebih dahulu.')
+                path = self.store.path.parent / 'test.wav'
+                with wave.open(str(path), 'wb') as audio:
+                    audio.setnchannels(2)
+                    audio.setsampwidth(2)
+                    audio.setframerate(48000)
+                    frames = bytearray()
+                    for i in range(48000):
+                        gain = min(i / 2400, (48000 - i) / 2400, 1)
+                        sample = int(32767 * 0.10 * gain * math.sin(2 * math.pi * 523.25 * i / 48000))
+                        frames.extend(struct.pack('<hh', sample, sample))
+                    audio.writeframes(frames)
+                await command('paplay', '--device', self.cached['sink'], str(path), timeout=6)
+                self.last_action = 'Nada uji dikirim ke Sony.'
+            else:
+                self.store.update({'speaker_enabled': True})
+                self.last_reconnect = time.monotonic()
+                if action == 'pair':
+                    previous = await asyncio.to_thread(pairable, True)
+                    scanner = None
+                    try:
+                        # Pairable/bondable must be enabled for a persistent bond.
+                        scanner = await asyncio.create_subprocess_exec('bluetoothctl', '--timeout', '25', 'scan', 'on',
+                            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                        for _ in range(12):
+                            try:
+                                info = await asyncio.to_thread(bluetooth)
+                                break
+                            except Exception:
+                                await asyncio.sleep(.5)
+                        else:
+                            raise ValueError('Sony belum terdeteksi. Aktifkan mode pairing pada speaker, lalu coba lagi.')
+                        if info.get('connected') and not info.get('bonded'):
+                            await asyncio.to_thread(bluetooth, 'disconnect')
+                            await asyncio.sleep(.5)
+                        if not info.get('bonded'):
+                            await command('bluetoothctl', '--agent', 'NoInputNoOutput', '--timeout', '20', 'pair', SONY, timeout=23, check=False)
+                        info = await asyncio.to_thread(bluetooth)
+                        if not info.get('bonded'):
+                            raise ValueError('Pairing belum tersimpan. Pastikan Sony masih dalam mode pairing.')
+                    finally:
+                        if scanner and scanner.returncode is None:
+                            scanner.terminate()
+                            await scanner.wait()
+                        await asyncio.to_thread(pairable, previous)
+                await asyncio.to_thread(bluetooth, 'connect')
+                await asyncio.sleep(1)
+                await self.snapshot()
+                await self.route_audio()
+                self.last_action = 'Sony tersambung.' if self.cached.get('sink') else 'Bluetooth tersambung, menunggu keluaran audio.'
+
+    async def tick(self):
+        async with self.lock:
+            await self.snapshot()
+            data = self.store.data
+            if should_reconnect(data, self.cached['speaker']['connected']) and self.cached['speaker']['paired'] and time.monotonic() - self.last_reconnect > 20:
+                self.last_reconnect = time.monotonic()
+                await asyncio.to_thread(bluetooth, 'connect')
+                await self.snapshot()
+            await self.route_audio()
+            await self.sync_receiver()
+
+    async def loop(self):
+        while True:
+            try:
+                await self.tick()
+                self.last_error = ''
+            except Exception as error:
+                self.last_error = str(error)[-350:]
+                log.warning('Audio tick: %s', error)
+            await asyncio.sleep(3)
+
+    async def lifecycle(self, app):
+        # Listen only for announcements; do not scan arbitrary LAN hosts.
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(('', 9091))
+        for address in ('192.168.8.240', '192.168.8.241'):
+            with contextlib.suppress(OSError):
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
+                                socket.inet_aton('239.255.0.1') + socket.inet_aton(address))
+        sock.setblocking(False)
+        self.discovery_transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(lambda: Discovery(self), sock=sock)
+        await command('pactl', 'set-default-sink', 'audiohub_network')
+        await command('pw-metadata', '-n', 'settings', '0', 'clock.force-quantum', str(self.store.data['quantum']))
+        task = asyncio.create_task(self.loop())
+        yield
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        await self.stop_receiver()
+        self.discovery_transport.close()
+
+    def status(self):
+        now = time.time()
+        peers = [p for p in self.peers.values() if now - p['last_seen'] < 60]
+        return dict(settings=self.store.data, **self.cached, peers=peers,
+                    receiver=dict(running=bool(self.receiver and self.receiver.returncode is None),
+                                  connected=self.receiver_connected, message=self.receiver_message),
+                    route_ready=self.route is not None, last_action=self.last_action,
+                    error=self.last_error, token=self.token)
+
+
+def make_app(controller):
+    allowed = {'192.168.8.240', '192.168.8.241', '127.0.0.1', 'localhost', 'audio.home.arpa'}
+
+    @web.middleware
+    async def guard(request, handler):
+        host = request.host.split(':')[0].lower()
+        if host not in allowed:
+            return web.json_response({'error': 'Host tidak diizinkan.'}, status=403)
+        if request.method not in ('GET', 'HEAD'):
+            origin = request.headers.get('Origin')
+            if origin and origin != 'http://' + request.host:
+                return web.json_response({'error': 'Origin tidak diizinkan.'}, status=403)
+            token = request.headers.get('X-AudioHub-Token', '')
+            if not hmac.compare_digest(token, controller.token):
+                return web.json_response({'error': 'Muat ulang dashboard sebelum mengubah pengaturan.'}, status=403)
+        try:
+            response = await handler(request)
+        except web.HTTPException:
+            raise
+        except (ValueError, json.JSONDecodeError) as error:
+            response = web.json_response({'error': str(error)}, status=400)
+        except Exception as error:
+            log.exception('Request failed')
+            response = web.json_response({'error': str(error)[-400:]}, status=503)
+        response.headers['Cache-Control'] = 'no-store'
+        response.headers['X-Content-Type-Options'] = 'nosniff'
+        response.headers['Referrer-Policy'] = 'no-referrer'
+        response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'self' http://192.168.8.240:8123 http://homeassistant.home.arpa http://ha.home.arpa; base-uri 'none'; form-action 'self'"
+        return response
+
+    async def status(request):
+        return web.json_response(controller.status())
+
+    async def settings(request):
+        patch = await request.json()
+        async with controller.lock:
+            old = dict(controller.store.data)
+            controller.store.update(patch)
+            await controller.apply(old)
+            controller.last_action = 'Pengaturan tersimpan.'
+        return web.json_response(controller.status())
+
+    async def speaker(request):
+        await controller.speaker_action(request.match_info['action'])
+        return web.json_response(controller.status())
+
+    async def spotify(request):
+        async with ClientSession(timeout=ClientTimeout(total=3)) as session:
+            async with session.get('http://127.0.0.1:3678/status') as response:
+                if response.status != 200:
+                    return web.json_response({'ready': True, 'active': False})
+                data = await response.json()
+                # Never forward credentials or account authentication endpoints.
+                return web.json_response({key: data.get(key) for key in ('active', 'paused', 'track', 'position', 'duration')})
+
+    async def index(request):
+        return web.FileResponse(BASE / 'static' / 'index.html')
+
+    app = web.Application(middlewares=[guard], client_max_size=8192)
+    app.router.add_get('/', index)
+    app.router.add_get('/api/status', status)
+    app.router.add_post('/api/settings', settings)
+    app.router.add_post('/api/speaker/{action}', speaker)
+    app.router.add_get('/api/spotify', spotify)
+    app.router.add_static('/static/', BASE / 'static')
+    return app
+
+
+if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
+    controller = Controller(os.environ.get('AUDIOHUB_STATE', '/var/lib/audiohub/settings.json'))
+    app = make_app(controller)
+    app.cleanup_ctx.append(controller.lifecycle)
+    web.run_app(app, host=os.environ.get('AUDIOHUB_BIND', '192.168.8.240'), port=int(os.environ.get('AUDIOHUB_PORT', '8096')), access_log=None)

@@ -1,0 +1,85 @@
+"""Validated, persistent operator settings for one homelab audio bridge."""
+import ipaddress
+import json
+import os
+import re
+from pathlib import Path
+
+SONY = '74:68:59:68:28:17'
+DEFAULTS = dict(source='network', sender_ip='', buffer_ms=80, quantum=1024,
+                volume=30, auto_reconnect=True, speaker_enabled=True,
+                network_enabled=False)
+
+
+def clean_ip(value):
+    if not isinstance(value, str):
+        raise ValueError('Alamat perangkat harus berupa IP LAN.')
+    try:
+        address = ipaddress.IPv4Address(value)
+    except ipaddress.AddressValueError:
+        raise ValueError('Masukkan IP perangkat, misalnya 192.168.8.249.') from None
+    if address not in ipaddress.IPv4Network('192.168.8.0/24') or str(address) in {
+        '192.168.8.0', '192.168.8.1', '192.168.8.240', '192.168.8.241', '192.168.8.255'
+    }:
+        raise ValueError('Pilih IP perangkat pengirim di jaringan 192.168.8.x.')
+    return str(address)
+
+
+def clean_mac(value):
+    if not isinstance(value, str) or re.fullmatch(r'(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}', value) is None:
+        raise ValueError('Alamat Bluetooth tidak valid.')
+    return value.upper()
+
+
+def should_reconnect(settings, connected):
+    return bool(settings['speaker_enabled'] and settings['auto_reconnect'] and not connected)
+
+
+def loopback_ids(text):
+    result = []
+    for line in text.splitlines():
+        fields = line.split('\t')
+        if len(fields) >= 3 and fields[1] == 'module-loopback' and 'source=audiohub_' in fields[2]:
+            result.append(int(fields[0]))
+    return result
+
+
+class ConfigStore:
+    def __init__(self, path):
+        self.path = Path(path)
+        self.data = DEFAULTS.copy()
+        if self.path.exists():
+            self.data = self.validate(json.loads(self.path.read_text()))
+
+    def validate(self, patch):
+        if not isinstance(patch, dict) or set(patch) - set(DEFAULTS):
+            raise ValueError('Pengaturan tidak dikenal.')
+        data = {**self.data, **patch}
+        if data['source'] not in ('network', 'spotify', 'airplay'):
+            raise ValueError('Sumber audio tidak valid.')
+        for key, low, high in [('volume', 0, 100), ('buffer_ms', 20, 250)]:
+            if type(data[key]) is not int or not low <= data[key] <= high:
+                raise ValueError(f'{key} harus berada antara {low} dan {high}.')
+        if type(data['quantum']) is not int or data['quantum'] not in (256, 512, 1024, 2048):
+            raise ValueError('Quantum harus 256, 512, 1024, atau 2048 sampel.')
+        for key in ('auto_reconnect', 'speaker_enabled', 'network_enabled'):
+            if type(data[key]) is not bool:
+                raise ValueError(f'{key} harus berupa boolean.')
+        if data['sender_ip'] != '':
+            data['sender_ip'] = clean_ip(data['sender_ip'])
+        elif data['network_enabled']:
+            raise ValueError('Pilih atau masukkan IP perangkat pengirim terlebih dahulu.')
+        return data
+
+    def update(self, patch):
+        data = self.validate(patch)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temp = self.path.with_suffix('.tmp')
+        fd = os.open(str(temp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, 'w') as stream:
+            json.dump(data, stream, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp, self.path)
+        self.data = data
+        return dict(data)
