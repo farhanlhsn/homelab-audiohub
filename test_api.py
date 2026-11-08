@@ -475,6 +475,30 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((pactl.count('unload-module'), pactl.count('load-module')), (2, 2))
             self.assertIsNone(controller.route)
 
+    async def test_loopback_goes_through_the_eq_sink_when_it_is_enabled_and_present(self):
+        pactl = FakePactl()
+        controller = self.controller
+        controller.cached = dict(speaker=SPEAKER, sink='bluez_output.sony', sink_index=10, eq_ready=True)
+        controller.activity.touch(time.monotonic())
+        with mock.patch('hub.command', pactl):
+            await controller.route_audio()
+            self.assertIn('sink=audiohub_eq', pactl.loaded_args)
+            # volume stays on the speaker's own sink, the EQ stage is unity apart from its headroom
+            volumes = [call for call in pactl.calls if call[:2] == ('pactl', 'set-sink-volume')]
+            self.assertEqual(volumes[-1][2], 'bluez_output.sony')
+            controller.store.update({'eq_enabled': False})
+            await controller.route_audio()
+            self.assertIn('sink=bluez_output.sony', pactl.loaded_args)
+            self.assertEqual((pactl.count('unload-module'), pactl.count('load-module')), (1, 2))
+
+    async def test_loopback_skips_the_eq_sink_when_it_is_missing(self):
+        pactl = FakePactl()
+        self.controller.cached = dict(speaker=SPEAKER, sink='bluez_output.sony', sink_index=10, eq_ready=False)
+        self.controller.activity.touch(time.monotonic())
+        with mock.patch('hub.command', pactl):
+            await self.controller.route_audio()
+        self.assertIn('sink=bluez_output.sony', pactl.loaded_args)
+
     async def test_loopback_left_by_a_previous_run_is_removed_when_nothing_plays(self):
         pactl = FakePactl(loaded=True)
         self.controller.cached = dict(speaker=SPEAKER, sink='bluez_output.sony', sink_index=10)

@@ -264,6 +264,9 @@ function renderBoard(next) {
 function renderSettings(next) {
   $('auto').checked = next.settings.auto_reconnect;
   $('auto-source').checked = next.settings.auto_source;
+  $('eq').checked = next.settings.eq_enabled;
+  $('eq').disabled = !next.eq_ready;
+  $('eq-hint').textContent = next.eq_ready ? 'Bass sedikit naik dan treble sedikit diredam, berdasarkan hasil ukur Sony. Matikan untuk suara asli speaker.' : 'Modul EQ belum dimuat di PipeWire, jadi suara tidak diubah.';
   if (document.activeElement !== $('buffer')) $('buffer').value = next.settings.buffer_ms;
   $('buffer-value').textContent = next.settings.buffer_ms + ' ms';
   if (document.activeElement !== $('quantum')) $('quantum').value = next.settings.quantum;
@@ -324,6 +327,7 @@ $('pair').onclick = () => act('/api/speaker/pair', {}, 'Permintaan pairing seles
 $('test').onclick = () => act('/api/speaker/test', {}, 'Nada uji dikirim ke Sony.');
 $('bt-pair').onclick = () => act('/api/bluetooth/' + (state.bluetooth_in.pairing ? 'cancel' : 'pair'), {});
 $('auto').onchange = () => act('/api/settings', {auto_reconnect: $('auto').checked});
+$('eq').onchange = () => act('/api/settings', {eq_enabled: $('eq').checked}, $('eq').checked ? 'Suara hangat aktif.' : 'Suara asli Sony.');
 $('auto-source').onchange = () => act('/api/settings', {auto_source: $('auto-source').checked}, $('auto-source').checked ? 'Sumber dipilih otomatis.' : 'Sumber dikunci sesuai pilihan.');
 $('vol').oninput = () => { $('volnum').textContent = $('vol').value; };
 $('vol').onchange = () => act('/api/settings', {volume: Number($('vol').value)}, 'Volume tersimpan.');

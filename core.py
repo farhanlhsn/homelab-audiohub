@@ -12,7 +12,7 @@ SONY = '74:68:59:68:28:17'
 SOURCES = ('bluetooth', 'airplay', 'dlna', 'spotify', 'network')
 DEFAULTS = dict(source='network', sender_ip='', buffer_ms=80, quantum=1024,
                 volume=30, auto_reconnect=True, speaker_enabled=True,
-                network_enabled=False, auto_source=True)
+                network_enabled=False, auto_source=True, eq_enabled=True)
 
 
 def clean_ip(value):
@@ -289,6 +289,13 @@ class ActivityTracker:
         return self.last_active is not None and now - self.last_active < self.hold
 
 
+def loopback_target(sink, eq_enabled, eq_ready):
+    """Where the loopback delivers: the EQ stage (which feeds the speaker) when it is enabled and loaded."""
+    if sink is None:
+        return None
+    return 'audiohub_eq' if eq_enabled and eq_ready else sink
+
+
 def loopback_ids(text):
     result = []
     for line in text.splitlines():
@@ -316,7 +323,7 @@ class ConfigStore:
                 raise ValueError(f'{key} harus berada antara {low} dan {high}.')
         if type(data['quantum']) is not int or data['quantum'] not in (256, 512, 1024, 2048):
             raise ValueError('Quantum harus 256, 512, 1024, atau 2048 sampel.')
-        for key in ('auto_reconnect', 'speaker_enabled', 'network_enabled', 'auto_source'):
+        for key in ('auto_reconnect', 'speaker_enabled', 'network_enabled', 'auto_source', 'eq_enabled'):
             if type(data[key]) is not bool:
                 raise ValueError(f'{key} harus berupa boolean.')
         if data['sender_ip'] != '':

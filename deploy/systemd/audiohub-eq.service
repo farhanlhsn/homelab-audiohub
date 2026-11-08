@@ -1,0 +1,18 @@
+[Unit]
+Description=AudioHub warm EQ for the Sony speaker
+After=audiohub-engine.service
+Requires=audiohub-engine.service
+PartOf=audiohub-engine.service
+[Service]
+User=audiohub
+Group=audiohub
+SupplementaryGroups=audio
+Environment=XDG_RUNTIME_DIR=/run/audiohub
+Environment=HOME=/var/lib/audiohub
+ExecStart=/usr/bin/pipewire -c /opt/homelab-audiohub/deploy/pipewire/audiohub-eq.conf
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+UMask=0077
+[Install]
+WantedBy=multi-user.target

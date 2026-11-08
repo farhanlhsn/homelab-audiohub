@@ -17,7 +17,7 @@ from pathlib import Path
 from aiohttp import web, ClientError, ClientSession, ClientTimeout
 from core import (ActivityTracker, ConfigStore, SONY, agent_reply, apply_airplay_item, bluetooth_streams_to_move,
                   bluez_track, clean_ip, clean_mac, clean_text, connection_list, didl_track, lan_address,
-                  latency_report, loopback_ids, next_retry_delay, parse_shairport_metadata, peer_addresses,
+                  latency_report, loopback_ids, loopback_target, next_retry_delay, parse_shairport_metadata, peer_addresses,
                   pick_source, should_reconnect, sink_indexes, sink_states, sources_playing, transport_delays,
                   transport_state, LOOPBACK_MS, SOURCES)
 
@@ -239,7 +239,7 @@ class Controller:
         self.last_error = ''
         self.last_action = 'Hub siap.'
         self.cached = dict(speaker=dict(connected=False, paired=False, name='ULT FIELD 1', address=SONY),
-                           sink=None, sink_index=None, codec=None, audio_ready=False)
+                           sink=None, sink_index=None, codec=None, audio_ready=False, eq_ready=False)
 
     async def snapshot(self):
         try:
@@ -258,7 +258,8 @@ class Controller:
             sink_index=sink.get('index') if sink else None,
             codec=sink.get('properties', {}).get('api.bluez5.codec') if sink else None,
             sample_spec=sink.get('sample_specification') if sink else None,
-            audio_ready=sink is not None, sink_state=sink.get('state') if sink else None)
+            audio_ready=sink is not None, sink_state=sink.get('state') if sink else None,
+            eq_ready=any(s.get('name') == 'audiohub_eq' for s in sinks))
         return self.cached
 
     async def dlna_request(self, action):
@@ -388,7 +389,8 @@ class Controller:
         sink = self.cached.get('sink')
         data = self.store.data
         playing = self.activity.active(time.monotonic())
-        wanted = ((data['source'], 'audiohub_' + data['source'] + '.monitor', sink, self.cached.get('sink_index'))
+        target = loopback_target(sink, data['eq_enabled'], self.cached.get('eq_ready', False))
+        wanted = ((data['source'], 'audiohub_' + data['source'] + '.monitor', target, self.cached.get('sink_index'))
                   if sink and data['speaker_enabled'] and playing else None)
         owned = loopback_ids(await command('pactl', 'list', 'short', 'modules'))
         if wanted == self.route and (self.route_module in owned if wanted else not owned):
@@ -399,7 +401,7 @@ class Controller:
         self.route_module = None
         if wanted:
             module_id = await command('pactl', 'load-module', 'module-loopback',
-                f'source={wanted[1]}', f'sink={sink}', f'latency_msec={LOOPBACK_MS}', 'source_dont_move=true', 'sink_dont_move=true')
+                f'source={wanted[1]}', f'sink={target}', f'latency_msec={LOOPBACK_MS}', 'source_dont_move=true', 'sink_dont_move=true')
             self.route_module = int(module_id)
             self.route = wanted
             await command('pactl', 'set-sink-volume', sink, str(self.store.data['volume']) + '%')

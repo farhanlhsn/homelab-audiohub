@@ -7,7 +7,7 @@ from pathlib import Path
 
 from core import (ActivityTracker, ConfigStore, agent_reply, apply_airplay_item, bluetooth_streams_to_move,
                   bluez_track, clean_ip, clean_mac, connection_list, didl_track, lan_address, latency_report,
-                  loopback_ids, next_retry_delay, parse_shairport_metadata, peer_addresses, pick_source,
+                  loopback_ids, loopback_target, next_retry_delay, parse_shairport_metadata, peer_addresses, pick_source,
                   should_reconnect, sink_indexes, sink_states, sources_playing, transport_delays, transport_state)
 
 SS = ('Recv-Q Send-Q                    Local Address:Port                     Peer Address:Port Process\n'
@@ -145,6 +145,21 @@ class ConnectionTests(unittest.TestCase):
 
     def test_wfas_unnamed_sender_falls_back_to_its_address(self):
         self.assertEqual(connection_list([], [], '', '192.168.8.245', '', {})[0]['name'], '192.168.8.245')
+
+    def test_eq_is_on_by_default_survives_restart_and_must_be_boolean(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = ConfigStore(Path(d) / 'settings.json')
+            self.assertTrue(store.data['eq_enabled'])
+            store.update({'eq_enabled': False})
+            self.assertFalse(ConfigStore(Path(d) / 'settings.json').data['eq_enabled'])
+            with self.assertRaises(ValueError):
+                store.update({'eq_enabled': 'yes'})
+
+    def test_loopback_target_is_the_eq_sink_only_when_enabled_and_present(self):
+        self.assertEqual(loopback_target('bluez_output.sony', True, True), 'audiohub_eq')
+        self.assertEqual(loopback_target('bluez_output.sony', False, True), 'bluez_output.sony')
+        self.assertEqual(loopback_target('bluez_output.sony', True, False), 'bluez_output.sony')
+        self.assertIsNone(loopback_target(None, True, True))
 
     def test_auto_source_is_on_by_default_survives_restart_and_must_be_boolean(self):
         with tempfile.TemporaryDirectory() as d:

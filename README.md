@@ -45,6 +45,7 @@
 - **Sony dibiarkan tidur.** Jalur ke speaker hanya dibuka selama ada suara (ditambah jeda 90 detik), sehingga A2DP bebas dan Sony bisa istirahat.
 - **Perangkat tersambung dan judul lagu** ditampilkan bersama jenis koneksinya.
 - **Latensi per ruas dengan asal angkanya:** dilaporkan perangkat, pengaturan hub, atau ditetapkan protokol. Latensi ujung ke ujung tidak bisa diukur dari hub karena berakhir di speaker, dan dashboard tidak berpura-pura bisa. Angka AirPlay ditampilkan sebagai batas atas (`≤ 2,0 s`) karena pengirim yang menentukan: dari Safari hampir instan, dari Control Center sampai sekitar 2 detik.
+- **Suara hangat (EQ).** Respons Sony diukur dengan mikrofon dan dikoreksi lewat filter PipeWire sebelum sinyal ke speaker (bass sedikit naik, treble sedikit diredam). Bisa dimatikan dari dashboard. Lihat [Penyetelan suara](#penyetelan-suara).
 - **Pairing Bluetooth dari dashboard** (jendela 120 detik, perangkat baru otomatis dipercaya) dan hapus perangkat.
 - **Reconnect Sony** tidak memblokir dashboard dan memakai backoff 20 sampai 300 detik.
 
@@ -78,6 +79,7 @@ flowchart LR
 |---|---|---|
 | `audiohub-engine` | PipeWire, WirePlumber, pipewire-pulse (sesi terpisah) | - |
 | `audiohub-dashboard` | `hub.py`: dashboard dan kontrol | TCP 8096 |
+| `audiohub-eq` | Filter EQ (`pipewire -c`) yang membuat sink `audiohub_eq` di depan Sony | - |
 | `audiohub-airplay2` + `nqptp` | AirPlay 2 (shairport-sync 5.6.2) dan sinkronisasi waktu PTP | TCP 7000, UDP 319/320 |
 | `audiohub-airplay` | AirPlay klasik (cadangan; saling `Conflicts=` dengan `airplay2`) | TCP 5000 |
 | `audiohub-dlna` | gmediarender, "Homelab Audio" | TCP 49494, SSDP 1900 |
@@ -172,6 +174,23 @@ Pengaturan disimpan di `AUDIOHUB_STATE` (bawaan `/var/lib/audiohub/settings.json
 | `sender_ip` | IPv4 di LAN | kosong | Alamat pengirim WFAS |
 | `buffer_ms` | 20 sampai 250 | `80` | Buffer WFAS |
 | `quantum` | 256, 512, 1024, 2048 | `1024` | Blok pemrosesan PipeWire (sampel pada 48 kHz) |
+| `eq_enabled` | boolean | `true` | Loopback lewat sink `audiohub_eq`; `false` langsung ke Sony. Bila sink EQ tidak ada, hub otomatis langsung ke Sony |
+
+## Penyetelan suara
+
+EQ "sedikit hangat" dibuat dari pengukuran, bukan tebakan. Berkas di [`tools/eq`](tools/eq/), konfigurasi aktif di [`deploy/pipewire/audiohub-eq.conf`](deploy/pipewire/audiohub-eq.conf).
+
+1. `gen_sweep.py` membuat sweep logaritmik 20 Hz sampai 20 kHz (8 detik, sekitar -23 dBFS) dengan awalan derau sangat pelan agar transport A2DP sempat terbuka.
+2. Sweep diputar ke Sony dengan `pw-play --target bluez_output...` sementara Mac merekam lewat ffmpeg (`-f avfoundation`).
+3. `analyze.py` menyejajarkan rekaman, membagi spektrumnya dengan sinyal asli, dan menghasilkan kurva respons per 1/6 oktaf relatif terhadap 1 kHz. Tiga pengukuran dirata-ratakan (selisih antar-percobaan rata-rata sekitar 1 dB).
+4. `design.py` menghitung koreksi menuju target hangat (bass sampai +3 dB di bawah 150 Hz, datar di tengah, turun 1 dB per oktaf di atas 3 kHz) hanya pada 80 Hz sampai 10 kHz, dengan empat filter lebar: +3,9 dB @120 Hz, +0,9 dB @250 Hz, -1,3 dB @4 kHz, -2,7 dB @7 kHz, dan preamp -4,7 dB untuk ruang kepala. `mkconf.py` menulis argumen filter-chain.
+5. Hub memilih target loopback: `audiohub_eq` bila `eq_enabled` dan sink-nya ada, selain itu langsung ke Sony. Volume tetap di sink Sony.
+
+Hasil verifikasi pada kondisi yang sama (hub nyata, volume 75%): perubahan terukur cocok dengan prediksi (selisih rata-rata 0,2 dB), dan simpangan rata-rata dari target pada 80 Hz sampai 10 kHz turun dari 3,1 dB ke 1,3 dB.
+
+Pengukuran ulang: jalankan skrip di `tools/eq` (butuh `numpy`, `scipy`, `matplotlib`), lalu ganti blok `filter.graph` di `audiohub-eq.conf` dan `sudo systemctl restart audiohub-eq`.
+
+Batas yang perlu diketahui: mikrofon MacBook tidak terkalibrasi, jadi koreksi di bawah 80 Hz dan di atas 10 kHz tidak dilakukan; hasil mengikuti posisi mikrofon dan ruangan; respons Sony bergantung pada volume (bass relatif lebih rendah pada volume tinggi), jadi koreksi dihitung pada volume 75%; preamp -4,7 dB membuat suara dengan EQ terdengar sedikit lebih pelan.
 
 ## API
 
@@ -194,21 +213,22 @@ hub.py           pengendali asyncio: PipeWire (pactl), BlueZ (D-Bus), UPnP, API 
 static/          dashboard (index.html, app.js, style.css, fonts/)
 test_core.py     tes logika murni
 test_api.py      tes pengendali dengan pactl/D-Bus/bluetoothctl tiruan
-deploy/          salinan referensi unit systemd dan konfigurasi
+deploy/          salinan referensi unit systemd dan konfigurasi (termasuk filter EQ)
+tools/eq/        skrip pengukuran dan perancangan EQ (sweep, analisis, desain filter)
 docs/            tangkapan layar dan catatan desain
 shairport*.conf  konfigurasi AirPlay klasik dan AirPlay 2
 engine.sh        menjalankan PipeWire, WirePlumber, pipewire-pulse
 ```
 
 ```bash
-python3 -m unittest test_core test_api     # 87 tes; butuh Python 3.11+ (loop.sock_sendto)
+python3 -m unittest test_core test_api     # 93 tes; butuh Python 3.11+ (loop.sock_sendto)
 ```
 
 - **Tes lebih dulu** untuk logika baru; logika yang bisa murni diletakkan di `core.py`.
 - **Dashboard tidak punya tes otomatis.** Verifikasinya manual di browser terhadap hub yang berjalan.
 - **CSP ketat** (`default-src 'self'`): tanpa skrip atau gaya inline, tanpa font atau stylesheet eksternal. Atribut `style` tidak boleh ada di markup; gaya dinamis lewat kelas atau CSSOM. Data dari perangkat lain yang masuk ke SVG harus di-escape.
 - **Deploy:** salin berkas ke `/opt/homelab-audiohub`, lalu `sudo systemctl restart audiohub-dashboard` (hanya perlu bila `*.py` berubah; berkas `static/` langsung terlayani). AirPlay tidak ikut terputus.
-- **Git:** repositori lokal (cabang `main`, belum ada remote). Commit pertama adalah kondisi awal sebelum semua perubahan.
+- **Git:** cabang `main`, remote `origin` di GitHub. Commit pertama adalah kondisi awal sebelum semua perubahan.
 
 ## Keamanan
 
@@ -225,6 +245,7 @@ Dirancang untuk **LAN rumah yang dipercaya**, tanpa login.
 - **Spotify Connect ditolak server Spotify** untuk akun ini (`failed retrieving aes key with code 1`). Penyebabnya batasan di sisi Spotify (akun yang dipaksa memakai DRM PlayPlay), bukan bug hub; go-librespot sudah versi terbaru. Gunakan Spotify lewat Bluetooth.
 - **AirPlay:** dari Control Center (suara sistem) pause dan resume tertunda sekitar 2 detik; dari Safari instan (pengamatan pemilik, belum diukur). PC Linux lewat AirPlay tidak mengirim judul lagu.
 - **Latensi ujung ke ujung tidak terukur.** Hanya delay Bluetooth Sony yang dilaporkan perangkat; angka lain adalah pengaturan atau angka protokol.
+- **EQ diukur dengan mikrofon bawaan Mac** pada satu posisi dan satu volume; di luar 80 Hz sampai 10 kHz tidak dikoreksi. Respons Sony berubah menurut volume, jadi pada volume jauh dari 75% hasilnya kurang tepat.
 - **Satu adapter Bluetooth** dipakai untuk Sony dan perangkat masuk. Pemindaian terus-menerus oleh integrasi Bluetooth lain di host yang sama (misalnya Home Assistant) bisa membuat koneksi putus-putus.
 - **Satu perangkat Bluetooth** yang praktis dipakai pada satu waktu.
 - **Sesi AirPlay 2 yang terbuka tapi senyap** dianggap aktif, sehingga menahan Sony tetap menyala sampai sesi ditutup.
